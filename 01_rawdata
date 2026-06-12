@@ -1,1 +1,719 @@
+#用tair 网站 拟南芥的最新版基因组 分析一下 这个不能区分链特异 就是比对一下 macs call peak 就可以了 把基础的数据信息 比对信息 peak数 以及peak 注释一下 
+#两种方法分析一下重复性 1） overlap 的比例 2）IDR 方法 https://www.jianshu.com/p/d8a7056b4294 如果重复性很好 用Diffband 鉴定一下差异peak https://www.jianshu.com/p/f849bd55ac27 同时用BigwigCompare 也算一下差异peak 最后比较一下 peak 和 差异peak 在 重组热区的overlap 比例
 
+cd /data/mshe/CAF1g_DMC1_data/
+conda activate rloop
+unrar x 黄霁月_H2603080_Arabidopsis_thaliana_R-loop-CUT-TAG-Sequencing_Report_20260529-zrb-pgf.rar
+mv 黄霁月_H2603080_Arabidopsis_thaliana_R-loop-CUT-TAG-Sequencing_Report_20260529-zrb-pgf/Raw_Data/ /data/mshe/CAF1g_DMC1_data/
+md5sum -c raw_files.md5
+
+# 去TAIR网站下载得到 tair12 的基因组信息以及辅助转换热区坐标的表格。embl.gz 用来得到参考基因组 FASTA，gff3.zip 用来做 peak 注释，vs_Araport11 文件后面用于辅助把文献 TAIR10/Araport11 热区坐标转到 TAIR12
+mkdir -p ref/TAIR12
+cd ref/TAIR12/
+unzip TAIR12_1Feb26.gff3.zip
+gunzip TAIR12_1Feb26.embl.gz
+#提取fasta文件
+conda install -c conda-forge -c bioconda biopython
+python - <<'PY'
+import re
+import gzip
+
+embl_file = "TAIR12_1Feb26.embl"
+out_file = "TAIR12_1Feb26.Chr.fa"
+
+def open_text(path):
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt")
+    return open(path, "r")
+
+records = []
+chrom = None
+seq_parts = []
+in_seq = False
+expected_len = None
+
+with open_text(embl_file) as f:
+    for line in f:
+        if line.startswith("ID"):
+            chrom = None
+            seq_parts = []
+            in_seq = False
+            expected_len = None
+
+            m = re.search(r";\s*(\d+)\s+BP\.", line)
+            if m:
+                expected_len = int(m.group(1))
+
+        elif line.startswith("AC") and "_Chr" in line:
+            m = re.search(r"_(Chr[1-5])\b", line)
+            if m:
+                chrom = m.group(1)
+
+        elif line.startswith("SQ"):
+            in_seq = True
+
+        elif line.startswith("//"):
+            if chrom is None:
+                raise ValueError("No chromosome name found for one EMBL record")
+
+            seq = "".join(seq_parts).upper()
+
+            if expected_len is not None and len(seq) != expected_len:
+                raise ValueError(
+                    f"Length mismatch for {chrom}: extracted {len(seq)}, expected {expected_len}"
+                )
+
+            records.append((chrom, seq))
+            chrom = None
+            seq_parts = []
+            in_seq = False
+            expected_len = None
+
+        elif in_seq:
+            # EMBL sequence lines contain bases plus spaces and a terminal count.
+            bases = re.findall(r"[A-Za-z]+", line)
+            seq_parts.append("".join(bases))
+
+# sort Chr1-Chr5
+records = sorted(records, key=lambda x: int(x[0].replace("Chr", "")))
+
+chroms = [r[0] for r in records]
+if chroms != ["Chr1", "Chr2", "Chr3", "Chr4", "Chr5"]:
+    raise ValueError(f"Unexpected chromosome set/order: {chroms}")
+
+with open(out_file, "w") as out:
+    for chrom, seq in records:
+        out.write(f">{chrom}\n")
+        for i in range(0, len(seq), 60):
+            out.write(seq[i:i+60] + "\n")
+
+print(f"Wrote {out_file}")
+for chrom, seq in records:
+    print(chrom, len(seq))
+print("total", sum(len(seq) for _, seq in records))
+PY
+#检查染色体名是否一致
+grep ">" TAIR12_1Feb26.Chr.fa
+grep -v "^#" TAIR12_1Feb26.gff3 | cut -f1 | sort -u
+samtools faidx TAIR12_1Feb26.Chr.fa
+
+## trim
+conda activate study_rna
+mkdir -p 01_trim 01_trim/logs
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  trim_galore \
+    -q 25 \
+    --stringency 1 \
+    --fastqc \
+    --length 35 \
+    --paired \
+    --cores 8 \
+    -o 01_trim \
+    Raw_Data/${sample}_R1.fastq.gz \
+    Raw_Data/${sample}_R2.fastq.gz \
+    > 01_trim/logs/${sample}.trim_galore.log 2>&1
+done
+
+##测试参数
+# 不加 trim1
+trim_galore -q 25 --stringency 1 --fastqc --length 35 --paired \
+  -o test_no_trim1 \
+  Raw_Data/Col_0_1_R1.fastq.gz Raw_Data/Col_0_1_R2.fastq.gz
+# 加 trim1
+trim_galore -q 25 --stringency 1 --fastqc --length 35 --paired --three_prime_clip_R1 1 --three_prime_clip_R2 1 \
+  --output_dir test_trim1 \
+  Raw_Data/Col_0_1_R1.fastq.gz Raw_Data/Col_0_1_R2.fastq.gz
+# 不加 trim1 的输出 read 长度
+zcat test_no_trim1/*_val_1.fq.gz | awk 'NR%4==2 {print length($0); exit}'
+zcat test_no_trim1/*_val_2.fq.gz | awk 'NR%4==2 {print length($0); exit}'
+# 加 three_prime_clip 的输出 read 长度
+zcat test_trim1/*_val_1.fq.gz | awk 'NR%4==2 {print length($0); exit}'
+zcat test_trim1/*_val_2.fq.gz | awk 'NR%4==2 {print length($0); exit}'
+
+zcat test_no_trim1/*_val_1.fq.gz | awk 'NR%4==2 {print length($0)}' | head -10000 | sort | uniq -c
+zcat test_trim1/*_val_1.fq.gz | awk 'NR%4==2 {print length($0)}' | head -10000 | sort | uniq -c
+### 老师说可以加上--trim 1 参数，测试终止
+
+## 重新trim
+mkdir -p 01_trim 01_trim/logs
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  trim_galore \
+    -q 25 \
+    --stringency 1 \
+    --fastqc \
+    --length 35 \
+    --paired \
+    --three_prime_clip_R1 1 \
+    --three_prime_clip_R2 1 \
+    --cores 8 \
+    -o 01_trim \
+    Raw_Data/${sample}_R1.fastq.gz \
+    Raw_Data/${sample}_R2.fastq.gz \
+    > 01_trim/logs/${sample}.trim_galore.log 2>&1
+done
+
+# 建立索引
+mkdir -p ref/TAIR12/bowtie2_index ref/TAIR12/bowtie1_index
+# bowtie1 index
+bowtie-build \
+  ref/TAIR12/TAIR12_1Feb26.Chr.fa \
+  ref/TAIR12/bowtie1_index/TAIR12_1Feb26.Chr
+# bowtie2 index
+bowtie2-build \
+  ref/TAIR12/TAIR12_1Feb26.Chr.fa \
+  ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr
+### ！！！此次数据为cut&Tag分析，与上次不同！！此后参照https://yezhengstat.github.io/CUTTag_tutorial/#31_Bowtie2_alignment_[required]该教程的参数去跑 ###
+
+#比对参数测试
+mkdir -p test_align/raw_vs_trim/qc test_align/raw_vs_trim/bam
+sample=Col_0_1
+# raw FASTQ 直接比对
+bowtie2 \
+  --end-to-end \
+  --very-sensitive \
+  --no-mixed \
+  --no-discordant \
+  --phred33 \
+  -I 10 \
+  -X 800 \
+  -p 8 \
+  -x ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr \
+  -1 00_raw/${sample}_R1.fastq.gz \
+  -2 00_raw/${sample}_R2.fastq.gz \
+  2> test_align/raw_vs_trim/qc/${sample}.raw.bw2.log \
+| samtools view -bS - \
+| samtools sort -@ 8 -o test_align/raw_vs_trim/bam/${sample}.raw.bw2.sorted.bam
+
+samtools index test_align/raw_vs_trim/bam/${sample}.raw.bw2.sorted.bam
+
+# trimmed FASTQ 比对
+bowtie2 \
+  --end-to-end \
+  --very-sensitive \
+  --no-mixed \
+  --no-discordant \
+  --phred33 \
+  -I 10 \
+  -X 800 \
+  -p 8 \
+  -x ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr \
+  -1 01_trim/${sample}_R1_val_1.fq.gz \
+  -2 01_trim/${sample}_R2_val_2.fq.gz \
+  2> test_align/raw_vs_trim/qc/${sample}.trim.bw2.log \
+| samtools view -bS - \
+| samtools sort -@ 8 -o test_align/raw_vs_trim/bam/${sample}.trim.bw2.sorted.bam
+
+samtools index test_align/raw_vs_trim/bam/${sample}.trim.bw2.sorted.bam
+
+#测试local代替end to end参数
+mkdir -p test_align/local_test/qc
+mkdir -p test_align/local_test/bam
+set -o pipefail
+sample=Col_0_1
+bowtie2 \
+  --local \
+  --very-sensitive \
+  --no-mixed \
+  --no-discordant \
+  --phred33 \
+  -I 10 \
+  -X 800 \
+  -p 8 \
+  -x ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr \
+  -1 01_trim/${sample}_R1_val_1.fq.gz \
+  -2 01_trim/${sample}_R2_val_2.fq.gz \
+  2> test_align/local_test/qc/${sample}.local.bw2.log \
+| samtools view -b - \
+| samtools sort -@ 8 -o test_align/local_test/bam/${sample}.local.bw2.sorted.bam
+
+samtools index test_align/local_test/bam/${sample}.local.bw2.sorted.bam
+
+samtools flagstat test_align/local_test/bam/${sample}.local.bw2.sorted.bam \
+  > test_align/local_test/qc/${sample}.local.flagstat.txt
+
+# 比对
+mkdir -p 03_bam 06_qc
+INDEX_BASE="ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr"
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "Running bowtie2 for ${sample} ..."
+
+  bowtie2 \
+    --end-to-end \
+    --very-sensitive \
+    --no-mixed \
+    --no-discordant \
+    --phred33 \
+    -I 10 \
+    -X 700 \
+    -p 10 \
+    -x "$INDEX_BASE" \
+    -1 01_trim/${sample}_R1_val_1.fq.gz \
+    -2 01_trim/${sample}_R2_val_2.fq.gz \
+    2> 06_qc/${sample}.bw2.log \
+  | samtools view -bS - \
+  | samtools sort -@ 8 -o 03_bam/${sample}.bw2.sorted.bam
+
+  samtools index 03_bam/${sample}.bw2.sorted.bam
+
+  samtools flagstat 03_bam/${sample}.bw2.sorted.bam \
+    > 06_qc/${sample}.bw2.flagstat.txt
+
+  echo "Finished ${sample}"
+done
+
+#看四个样本的比对率
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} bowtie2 ====="
+  grep -E "aligned concordantly|overall alignment rate" 06_qc/${sample}.bw2.log
+  echo
+done
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  samtools flagstat 03_bam/${sample}.bw2.sorted.bam \
+    > 06_qc/${sample}.bw2.flagstat.txt
+done
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} flagstat ====="
+  grep -E "in total|mapped|properly paired|singletons" \
+    06_qc/${sample}.bw2.flagstat.txt
+  echo
+done
+
+#用新参数比对
+mkdir -p 03_bam_local_X800 06_qc_local_X800
+INDEX_BASE="ref/TAIR12/bowtie2_index/TAIR12_1Feb26.Chr"
+set -o pipefail
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "Running bowtie2 local X800 for ${sample} ..."
+
+  bowtie2 \
+    --local \
+    --very-sensitive \
+    --no-mixed \
+    --no-discordant \
+    --phred33 \
+    -I 10 \
+    -X 800 \
+    -p 10 \
+    -x "$INDEX_BASE" \
+    -1 01_trim/${sample}_R1_val_1.fq.gz \
+    -2 01_trim/${sample}_R2_val_2.fq.gz \
+    2> 06_qc_local_X800/${sample}.local.X800.bw2.log \
+  | samtools view -b - \
+  | samtools sort -@ 8 -o 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam
+
+  samtools index 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam
+
+  samtools flagstat 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+    > 06_qc_local_X800/${sample}.local.X800.bw2.flagstat.txt
+
+  samtools quickcheck -v 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam
+
+  echo "Finished ${sample}"
+done
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} bowtie2 ====="
+  grep -E "aligned concordantly|overall alignment rate" 06_qc_local_X800/${sample}.local.X800.bw2.log
+  echo
+done
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} flagstat ====="
+  grep -E "in total|mapped|properly paired|singletons" \
+    06_qc_local_X800/${sample}.local.X800.bw2.flagstat.txt
+  echo
+done
+
+#看插入片段长度分布
+mkdir -p 06_qc_local_X800/fragment_size_pos
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  samtools view -f 2 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+  | awk '$9 > 0 {print $9}' \
+  | sort -n \
+  > 06_qc_local_X800/fragment_size_pos/${sample}.fragment_length.txt
+done
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} ====="
+  awk '
+    {a[NR]=$1; sum+=$1}
+    END{
+      if(NR>0){
+        print "N_fragments", NR;
+        print "mean", sum/NR;
+        print "median", a[int((NR+1)/2)];
+        print "p90", a[int(NR*0.90)];
+        print "p95", a[int(NR*0.95)];
+        print "p99", a[int(NR*0.99)];
+      }
+    }' 06_qc_local_X800/fragment_size_pos/${sample}.fragment_length.txt
+done
+
+#统计重复率
+mkdir -p 06_qc_local_X800/markdup 04_markdup_local_X800
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  picard MarkDuplicates \
+    I=03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+    O=04_markdup_local_X800/${sample}.bw2.markdup.bam \
+    M=06_qc_local_X800/markdup/${sample}.markdup.metrics.txt \
+    REMOVE_DUPLICATES=false \
+    VALIDATION_STRINGENCY=SILENT
+
+  samtools index 04_markdup_local_X800/${sample}.bw2.markdup.bam
+done
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} ====="
+  grep -A 2 "^LIBRARY" 06_qc_local_X800/markdup/${sample}.markdup.metrics.txt
+done
+
+#生成BigWig文件
+mkdir -p 05_bigwig_local_X800
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  bamCoverage \
+    -b 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+    -o 05_bigwig_local_X800/${sample}.CPM.bw \
+    --binSize 10 \
+    --normalizeUsing CPM \
+    -p 8
+done
+
+# macs3 进行peakcall
+mkdir -p 04_macs3_local_X800 06_qc_local_X800/macs3_logs
+vim run_macs3_callpeak_all.sh
+#!/bin/bash
+set -euo pipefail
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== Running MACS3 for ${sample} ====="
+
+  mkdir -p 04_macs3_local_X800/${sample}
+
+  macs3 callpeak \
+    -t 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+    -f BAMPE \
+    -g 1.2e8 \
+    -n ${sample} \
+    --outdir 04_macs3_local_X800/${sample} \
+    -q 0.05 \
+    --keep-dup all \
+    > 06_qc_local_X800/macs3_logs/${sample}.macs3.stdout.log \
+    2> 06_qc_local_X800/macs3_logs/${sample}.macs3.stderr.log
+
+  echo "===== Finished ${sample} ====="
+done
+chmod +x run_macs3_callpeak_all.sh
+nohup ./run_macs3_callpeak_all.sh > 06_qc_local_X800/macs3_logs/run_macs3_callpeak_all.nohup.log 2>&1 &
+# 查看peak数量和长度qc
+mkdir -p 06_qc_local_X800/peak_qc
+echo -e "sample\tpeak_count\ttotal_peak_bp\tmean_peak_len\tmedian_peak_len" \
+  > 06_qc_local_X800/peak_qc/macs3_peak_summary.tsv
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  peak=04_macs3_local_X800/${sample}/${sample}_peaks.narrowPeak
+
+  n=$(wc -l < "$peak")
+  total=$(awk '{sum += $3-$2} END{print sum}' "$peak")
+  mean=$(awk '{sum += $3-$2; n++} END{if(n>0) print sum/n; else print "NA"}' "$peak")
+  median=$(awk '{print $3-$2}' "$peak" | sort -n | awk '{a[NR]=$1} END{if(NR>0) print a[int((NR+1)/2)]; else print "NA"}')
+
+  echo -e "${sample}\t${n}\t${total}\t${mean}\t${median}" \
+    >> 06_qc_local_X800/peak_qc/macs3_peak_summary.tsv
+done
+cat 06_qc_local_X800/peak_qc/macs3_peak_summary.tsv
+#检查 MACS3 日志有没有明显异常
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  echo "===== ${sample} ====="
+  tail -n 30 06_qc_local_X800/macs3_logs/${sample}.macs3.stderr.log
+  echo
+done
+
+# 两种方法分析重复性：overlap 和 IDR
+# 准备排好序的peak文件
+mkdir -p 07_reproducibility_local_X800/peaks_sorted
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  awk 'BEGIN{OFS="\t"} $1 ~ /^Chr[1-5]$/ {print $0}' \
+    04_macs3_local_X800/${sample}/${sample}_peaks.narrowPeak \
+  | sort -k1,1 -k2,2n \
+  > 07_reproducibility_local_X800/peaks_sorted/${sample}.coord.sorted.narrowPeak
+done
+# IDR 的需要用-log10(p-value) 进行排序（第 8 行就是 pvalue）
+mkdir -p 07_reproducibility_local_X800/idr/idr_input
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+  awk 'BEGIN{OFS="\t"} $1 ~ /^Chr[1-5]$/ {print $0}' \
+    04_macs3_local_X800/${sample}/${sample}_peaks.narrowPeak \
+  | sort -k8,8nr \
+  > 07_reproducibility_local_X800/idr/idr_input/${sample}.pvalue.sorted.narrowPeak
+done
+
+# overlap 方法
+mkdir -p 07_reproducibility_local_X800/overlap
+bedtools intersect \
+  -a 07_reproducibility_local_X800/peaks_sorted/Col_0_1.coord.sorted.narrowPeak \
+  -b 07_reproducibility_local_X800/peaks_sorted/Col_0_2.coord.sorted.narrowPeak \
+  -wo \
+  > 07_reproducibility_local_X800/overlap/Col_0_1_vs_Col_0_2.overlaps.wo.bed
+
+bedtools intersect \
+  -a 07_reproducibility_local_X800/peaks_sorted/dmcl_4_1.coord.sorted.narrowPeak \
+  -b 07_reproducibility_local_X800/peaks_sorted/dmcl_4_2.coord.sorted.narrowPeak \
+  -wo \
+  > 07_reproducibility_local_X800/overlap/dmcl_4_1_vs_dmcl_4_2.overlaps.wo.bed
+
+echo -e "condition\trepA\trepB\tA_peaks\tB_peaks\tA_overlap_B\tA_overlap_pct\tB_overlap_A\tB_overlap_pct" \
+  > 07_reproducibility_local_X800/overlap/replicate_peak_overlap.tsv
+
+calc_overlap () {
+  condition=$1
+  repA=$2
+  repB=$3
+
+  A=07_reproducibility_local_X800/peaks_sorted/${repA}.coord.sorted.narrowPeak
+  B=07_reproducibility_local_X800/peaks_sorted/${repB}.coord.sorted.narrowPeak
+
+  nA=$(wc -l < "$A")
+  nB=$(wc -l < "$B")
+
+  Aov=$(bedtools intersect -a "$A" -b "$B" -u | wc -l)
+  Bov=$(bedtools intersect -a "$B" -b "$A" -u | wc -l)
+
+  Apct=$(awk -v x="$Aov" -v n="$nA" 'BEGIN{if(n>0) printf "%.2f", x/n*100; else print "NA"}')
+  Bpct=$(awk -v x="$Bov" -v n="$nB" 'BEGIN{if(n>0) printf "%.2f", x/n*100; else print "NA"}')
+
+  echo -e "${condition}\t${repA}\t${repB}\t${nA}\t${nB}\t${Aov}\t${Apct}\t${Bov}\t${Bpct}" \
+    >> 07_reproducibility_local_X800/overlap/replicate_peak_overlap.tsv
+}
+
+calc_overlap Col_0 Col_0_1 Col_0_2
+calc_overlap dmcl_4 dmcl_4_1 dmcl_4_2
+
+cat 07_reproducibility_local_X800/overlap/replicate_peak_overlap.tsv
+
+# IDR 方法
+mamba create -n idr_env -c conda-forge -c bioconda idr -y
+conda activate idr_env
+idr --version
+mkdir -p 07_reproducibility_local_X800/idr/result 07_reproducibility_local_X800/idr/logs
+
+idr \
+  --samples \
+    07_reproducibility_local_X800/idr/idr_input/Col_0_1.pvalue.sorted.narrowPeak \
+    07_reproducibility_local_X800/idr/idr_input/Col_0_2.pvalue.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value \
+  --output-file 07_reproducibility_local_X800/idr/result/Col_0.idr.narrowPeak \
+  --plot \
+  --log-output-file 07_reproducibility_local_X800/idr/logs/Col_0.idr.log
+
+idr \
+  --samples \
+    07_reproducibility_local_X800/idr/idr_input/dmcl_4_1.pvalue.sorted.narrowPeak \
+    07_reproducibility_local_X800/idr/idr_input/dmcl_4_2.pvalue.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value \
+  --output-file 07_reproducibility_local_X800/idr/result/dmcl_4.idr.narrowPeak \
+  --plot \
+  --log-output-file 07_reproducibility_local_X800/idr/logs/dmcl_4.idr.log
+
+echo -e "condition\tidr_total_peaks\tidr_0.05_peaks" \
+  > 07_reproducibility_local_X800/idr/idr_summary.tsv
+
+for condition in Col_0 dmcl_4
+do
+  total=$(wc -l < 07_reproducibility_local_X800/idr/result/${condition}.idr.narrowPeak)
+  pass=$(awk '$5 >= 540' 07_reproducibility_local_X800/idr/result/${condition}.idr.narrowPeak | wc -l)
+
+  echo -e "${condition}\t${total}\t${pass}" \
+    >> 07_reproducibility_local_X800/idr/idr_summary.tsv
+
+  awk '$5 >= 540' \
+    07_reproducibility_local_X800/idr/result/${condition}.idr.narrowPeak \
+    > 07_reproducibility_local_X800/idr/result/${condition}.IDR0.05.narrowPeak
+done
+
+cat 07_reproducibility_local_X800/idr/idr_summary.tsv
+for condition in Col_0 dmcl_4
+do
+  echo "===== ${condition} IDR log ====="
+  tail -n 40 07_reproducibility_local_X800/idr/logs/${condition}.idr.log
+done
+
+# Diffband 鉴定差异peaks
+mamba create -n diffbind -c conda-forge -c bioconda r-base=4.1 bioconductor-diffbind -y
+conda activate diffbind
+mkdir -p 08_diffbind_local_X800
+cat > 08_diffbind_local_X800/sample_sheet.csv <<'EOF'
+SampleID,Tissue,Factor,Condition,Replicate,bamReads,Peaks,PeakCaller
+Col_0_1,sample,Rloop,Col_0,1,03_bam_local_X800/Col_0_1.local.X800.bw2.sorted.bam,04_macs3_local_X800/Col_0_1/Col_0_1_peaks.narrowPeak,narrow
+Col_0_2,sample,Rloop,Col_0,2,03_bam_local_X800/Col_0_2.local.X800.bw2.sorted.bam,04_macs3_local_X800/Col_0_2/Col_0_2_peaks.narrowPeak,narrow
+dmcl_4_1,sample,Rloop,dmcl_4,1,03_bam_local_X800/dmcl_4_1.local.X800.bw2.sorted.bam,04_macs3_local_X800/dmcl_4_1/dmcl_4_1_peaks.narrowPeak,narrow
+dmcl_4_2,sample,Rloop,dmcl_4,2,03_bam_local_X800/dmcl_4_2.local.X800.bw2.sorted.bam,04_macs3_local_X800/dmcl_4_2/dmcl_4_2_peaks.narrowPeak,narrow
+EOF
+# 检查路径
+cat > 08_diffbind_local_X800/run_diffbind.R <<'EOF'
+library(DiffBind)
+
+project_dir <- "/data/mshe/CAF1g_DMC1_data"
+outdir <- file.path(project_dir, "08_diffbind_local_X800")
+
+setwd(project_dir)
+
+samples <- read.csv(
+  file.path(outdir, "sample_sheet.csv"),
+  stringsAsFactors = FALSE,
+  na.strings = c("", "NA")
+)
+
+print(samples)
+
+# 检查 BAM 和 peak 文件是否存在
+all_files <- c(samples$bamReads, samples$Peaks)
+missing_files <- all_files[!file.exists(all_files)]
+
+if (length(missing_files) > 0) {
+  cat("Missing files:\n")
+  print(missing_files)
+  stop("Some BAM or peak files are missing. Check sample_sheet.csv paths.")
+}
+
+# 检查 BAM index 是否存在
+bam_index1 <- paste0(samples$bamReads, ".bai")
+bam_index2 <- sub("\\.bam$", ".bai", samples$bamReads)
+
+missing_bai <- samples$bamReads[!(file.exists(bam_index1) | file.exists(bam_index2))]
+
+if (length(missing_bai) > 0) {
+  cat("BAM files without index:\n")
+  print(missing_bai)
+  stop("Some BAM index files are missing. Run samtools index first.")
+}
+
+# 读入样本
+db <- dba(sampleSheet = samples)
+
+# peak overlap 图
+pdf(file.path(outdir, "01_peak_overlap_before_count.pdf"))
+plot(db)
+dev.off()
+
+# 计数
+db <- dba.count(db, bUseSummarizeOverlaps = TRUE)
+
+# PCA
+pdf(file.path(outdir, "02_PCA_after_count.pdf"))
+dba.plotPCA(db, attributes = DBA_CONDITION, label = DBA_ID)
+dev.off()
+
+# 相关性 heatmap
+pdf(file.path(outdir, "03_correlation_heatmap_after_count.pdf"))
+plot(db)
+dev.off()
+
+# 建立 contrast：按照 Condition 分组，要求每组至少 2 个重复
+db <- dba.contrast(
+  db,
+  categories = DBA_CONDITION,
+  minMembers = 2
+)
+
+# 只用 DESeq2 分析，不调用 edgeR
+db <- dba.analyze(
+  db,
+  method = DBA_DESEQ2
+)
+
+# 保存 contrast 信息
+sink(file.path(outdir, "04_diffbind_contrast_summary.txt"))
+dba.show(db, bContrasts = TRUE)
+sink()
+
+# MA plot
+pdf(file.path(outdir, "05_MAplot_DESeq2.pdf"))
+dba.plotMA(db, contrast = 1, method = DBA_DESEQ2)
+dev.off()
+
+# Volcano plot
+pdf(file.path(outdir, "06_volcano_DESeq2.pdf"))
+dba.plotVolcano(db, contrast = 1, method = DBA_DESEQ2)
+dev.off()
+
+# 导出全部 DESeq2 结果，th = 1 表示不按 FDR 过滤
+res_deseq2 <- dba.report(
+  db,
+  contrast = 1,
+  method = DBA_DESEQ2,
+  th = 1
+)
+
+res_deseq2_df <- as.data.frame(res_deseq2)
+
+write.table(
+  res_deseq2_df,
+  file = file.path(outdir, "Col_0_vs_dmcl_4_DESeq2_all.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+# 筛选 FDR < 0.05 的差异 peak
+sig_deseq2 <- subset(res_deseq2_df, FDR < 0.05)
+
+write.table(
+  sig_deseq2,
+  file = file.path(outdir, "Col_0_vs_dmcl_4_DESeq2_FDR0.05.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+# 导出 BED
+# DiffBind / GRanges 的 start 是 1-based，BED 需要 0-based，所以 start - 1
+if (nrow(sig_deseq2) > 0) {
+  bed_deseq2 <- data.frame(
+    chr = sig_deseq2$seqnames,
+    start = sig_deseq2$start - 1,
+    end = sig_deseq2$end,
+    name = paste0("peak_", seq_len(nrow(sig_deseq2))),
+    score = 0,
+    strand = ".",
+    Fold = sig_deseq2$Fold,
+    FDR = sig_deseq2$FDR
+  )
+
+  write.table(
+    bed_deseq2,
+    file = file.path(outdir, "Col_0_vs_dmcl_4_DESeq2_FDR0.05.bed"),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+} else {
+  cat("No significant peaks with FDR < 0.05.\n")
+  file.create(file.path(outdir, "Col_0_vs_dmcl_4_DESeq2_FDR0.05.bed"))
+}
+
+# 保存 DiffBind 对象
+saveRDS(db, file.path(outdir, "diffbind_object_DESeq2.rds"))
+
+cat("DiffBind DESeq2-only analysis finished.\n")
+EOF
+Rscript 08_diffbind_local_X800/run_diffbind.R
