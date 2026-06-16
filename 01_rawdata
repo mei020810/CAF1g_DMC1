@@ -2,7 +2,7 @@
 #两种方法分析一下重复性 1） overlap 的比例 2）IDR 方法 https://www.jianshu.com/p/d8a7056b4294 如果重复性很好 用Diffband 鉴定一下差异peak https://www.jianshu.com/p/f849bd55ac27 同时用BigwigCompare 也算一下差异peak 最后比较一下 peak 和 差异peak 在 重组热区的overlap 比例
 
 cd /data/mshe/CAF1g_DMC1_data/
-conda activate rloop
+conda activate study_rna
 unrar x 黄霁月_H2603080_Arabidopsis_thaliana_R-loop-CUT-TAG-Sequencing_Report_20260529-zrb-pgf.rar
 mv 黄霁月_H2603080_Arabidopsis_thaliana_R-loop-CUT-TAG-Sequencing_Report_20260529-zrb-pgf/Raw_Data/ /data/mshe/CAF1g_DMC1_data/
 md5sum -c raw_files.md5
@@ -391,7 +391,34 @@ do
     -p 8
 done
 
-# macs3 进行peakcall
+#测试不加--keep-dup all
+mkdir -p test_macs3 test_macs3/qc/log test_macs3/keepdup_all
+sample=Col_0_1
+  macs3 callpeak \
+    -t 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+    -f BAMPE \
+    -g 1.2e8 \
+    -n ${sample} \
+    --outdir test_macs3/${sample} \
+    -q 0.05 \
+    > test_macs3/qc/log/${sample}.macs3.stdout.log \
+    2> test_macs3/qc/log/${sample}.macs3.stderr.log
+# 保留所有重复
+macs3 callpeak \
+  -t 03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam \
+  -f BAMPE \
+  -g 1.2e8 \
+  -n ${sample}.keepdup_all \
+  --outdir test_macs3/keepdup_all/${sample} \
+  -q 0.05 \
+  --keep-dup all \
+  > test_macs3/qc/log/${sample}.keepdup_all.macs3.stdout.log \
+  2> test_macs3/qc/log/${sample}.keepdup_all.macs3.stderr.log
+#看 peak 数
+wc -l test_macs3/Col_0_1/Col_0_1_peaks.narrowPeak
+wc -l test_macs3/keepdup_all/Col_0_1/Col_0_1.keepdup_all_peaks.narrowPeak
+
+# macs3 进行peakcall（不加keepdup_all的peak数多，用这个）
 mkdir -p 04_macs3_local_X800 06_qc_local_X800/macs3_logs
 vim run_macs3_callpeak_all.sh
 #!/bin/bash
@@ -410,7 +437,6 @@ do
     -n ${sample} \
     --outdir 04_macs3_local_X800/${sample} \
     -q 0.05 \
-    --keep-dup all \
     > 06_qc_local_X800/macs3_logs/${sample}.macs3.stdout.log \
     2> 06_qc_local_X800/macs3_logs/${sample}.macs3.stderr.log
 
