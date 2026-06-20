@@ -469,6 +469,40 @@ do
   tail -n 30 06_qc_local_X800/macs3_logs/${sample}.macs3.stderr.log
   echo
 done
+#生成数据量QC表
+mkdir -p 06_qc_local_X800/data_qc
+
+echo -e "sample\tbowtie2_alignment_rate\tmapped_reads\tproper_pair_reads\tproper_pair_fragments\tmacs3_total_fragments\tmacs3_fragments_after_filtering\tmacs3_redundant_rate\tpeak_count\ttotal_peak_bp\tmean_peak_len\tmedian_peak_len" \
+> 06_qc_local_X800/data_qc/dataset_qc_with_peak_summary.tsv
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+    bam="03_bam_local_X800/${sample}.local.X800.bw2.sorted.bam"
+    bw2log="06_qc_local_X800/${sample}.local.X800.bw2.log"
+    macslog="06_qc_local_X800/macs3_logs/${sample}.macs3.stderr.log"
+    peak_summary="06_qc_local_X800/peak_qc/macs3_peak_summary.tsv"
+
+    align_rate=$(grep "overall alignment rate" "$bw2log" | awk '{print $1}')
+
+    mapped_reads=$(samtools view -c -F 4 "$bam")
+    proper_pair_reads=$(samtools view -c -f 2 "$bam")
+    proper_pair_fragments=$((proper_pair_reads / 2))
+
+    macs3_total=$(grep "total fragments in treatment" "$macslog" | tail -n 1 | awk '{print $NF}')
+    macs3_after=$(grep "fragments after filtering in treatment" "$macslog" | tail -n 1 | awk '{print $NF}')
+    macs3_redun=$(grep "Redundant rate of treatment" "$macslog" | tail -n 1 | awk '{print $NF}')
+
+    peak_count=$(awk -v s="$sample" 'NR>1 && $1==s {print $2}' "$peak_summary")
+    total_peak_bp=$(awk -v s="$sample" 'NR>1 && $1==s {print $3}' "$peak_summary")
+    mean_peak_len=$(awk -v s="$sample" 'NR>1 && $1==s {print $4}' "$peak_summary")
+    median_peak_len=$(awk -v s="$sample" 'NR>1 && $1==s {print $5}' "$peak_summary")
+
+    echo -e "${sample}\t${align_rate}\t${mapped_reads}\t${proper_pair_reads}\t${proper_pair_fragments}\t${macs3_total}\t${macs3_after}\t${macs3_redun}\t${peak_count}\t${total_peak_bp}\t${mean_peak_len}\t${median_peak_len}" \
+    >> 06_qc_local_X800/data_qc/dataset_qc_with_peak_summary.tsv
+done
+
+cat 06_qc_local_X800/data_qc/dataset_qc_with_peak_summary.tsv
+
 
 # 两种方法分析重复性：overlap 和 IDR
 # 准备排好序的peak文件
@@ -743,3 +777,496 @@ saveRDS(db, file.path(outdir, "diffbind_object_DESeq2.rds"))
 cat("DiffBind DESeq2-only analysis finished.\n")
 EOF
 Rscript 08_diffbind_local_X800/run_diffbind.R
+
+#BigwigCompare可视化与信号趋势比较
+#合并重复（对照组）
+conda activate study_rna
+mkdir -p 07_bam_merged 08_bigwig_merged_RPGC 09_bigwigCompare_RPGC
+
+samtools merge -@ 8 \
+  07_bam_merged/Col_0.local.X800.merged.bam \
+  03_bam_local_X800/Col_0_1.local.X800.bw2.sorted.bam \
+  03_bam_local_X800/Col_0_2.local.X800.bw2.sorted.bam
+
+samtools sort -@ 8 \
+  -o 07_bam_merged/Col_0.local.X800.merged.sorted.bam \
+  07_bam_merged/Col_0.local.X800.merged.bam
+
+samtools index 07_bam_merged/Col_0.local.X800.merged.sorted.bam
+#突变体
+samtools merge -@ 8 \
+  07_bam_merged/dmcl_4.local.X800.merged.bam \
+  03_bam_local_X800/dmcl_4_1.local.X800.bw2.sorted.bam \
+  03_bam_local_X800/dmcl_4_2.local.X800.bw2.sorted.bam
+
+samtools sort -@ 8 \
+  -o 07_bam_merged/dmcl_4.local.X800.merged.sorted.bam \
+  07_bam_merged/dmcl_4.local.X800.merged.bam
+
+samtools index 07_bam_merged/dmcl_4.local.X800.merged.sorted.bam
+#获得基因组长度
+awk '$1 ~ /^Chr[1-5]$/ {sum += $2} END {print sum}'   ref/TAIR12/TAIR12_1Feb26.Chr.fa.fai
+#生成标准化的bigWig（CPM 标准化避免测序深度不同影响比较）
+bamCoverage \
+  -b 07_bam_merged/Col_0.local.X800.merged.sorted.bam \
+  -o 08_bigwig_merged_RPGC/Col_0.local.X800.merged.RPGC.bw \
+  --normalizeUsing RPGC \
+  --effectiveGenomeSize 142481245 \
+  --binSize 10 \
+  -p 8
+
+bamCoverage \
+  -b 07_bam_merged/dmcl_4.local.X800.merged.sorted.bam \
+  -o 08_bigwig_merged_RPGC/dmcl_4.local.X800.merged.RPGC.bw \
+  --normalizeUsing RPGC \
+  --effectiveGenomeSize 142481245 \
+  --binSize 10 \
+  -p 8
+#比较野生型和突变体（log2）
+bigwigCompare \
+  -b1 08_bigwig_merged_RPGC/Col_0.local.X800.merged.RPGC.bw \
+  -b2 08_bigwig_merged_RPGC/dmcl_4.local.X800.merged.RPGC.bw \
+  --operation log2 \
+  --binSize 200 \
+  --pseudocount 1 \
+  --skipZeroOverZero \
+  -p 8 \
+  -o 09_bigwigCompare_RPGC/Col_0_vs_dmcl_4.log2ratio.RPGC.bin200.bw
+#生成表格（log2）
+mkdir -p 09_bigwigCompare_RPGC/bedgraph
+bigwigCompare \
+  -b1 08_bigwig_merged_RPGC/Col_0.local.X800.merged.RPGC.bw \
+  -b2 08_bigwig_merged_RPGC/dmcl_4.local.X800.merged.RPGC.bw \
+  --operation log2 \
+  --binSize 200 \
+  --pseudocount 1 \
+  --skipZeroOverZero \
+  --outFileFormat bedgraph \
+  -p 8 \
+  -o 09_bigwigCompare_RPGC/bedgraph/Col_0_vs_dmcl_4.log2ratio.RPGC.bin200.bedgraph
+#直接倍数的表格
+bigwigCompare \
+  -b1 08_bigwig_merged_RPGC/Col_0.local.X800.merged.RPGC.bw \
+  -b2 08_bigwig_merged_RPGC/dmcl_4.local.X800.merged.RPGC.bw \
+  --operation ratio \
+  --binSize 200 \
+  --pseudocount 1 \
+  --skipZeroOverZero \
+  --outFileFormat bedgraph \
+  -p 8 \
+  -o 09_bigwigCompare_RPGC/bedgraph/Col_0_vs_dmcl_4.ratio.RPGC.bin200.bedgraph
+#查看bedGraph 里是否有超过 2 倍的 200 bp bin
+bg=09_bigwigCompare_RPGC/bedgraph/Col_0_vs_dmcl_4.log2ratio.RPGC.bin200.sorted.bedgraph
+awk '
+BEGIN{FS=OFS="\t"}
+{
+  n++;
+  if (n==1 || $4<min) min=$4;
+  if (n==1 || $4>max) max=$4;
+  if ($4>=1) col_high++;
+  if ($4<=-1) dmcl_high++;
+  if ($4>=0.585) col_high_1_5++;
+  if ($4<=-0.585) dmcl_high_1_5++;
+}
+END{
+  print "total_bins", n;
+  print "min_log2FC", min;
+  print "max_log2FC", max;
+  print "bins_log2FC_ge_1", col_high;
+  print "bins_log2FC_le_-1", dmcl_high;
+  print "bins_log2FC_ge_0.585", col_high_1_5;
+  print "bins_log2FC_le_-0.585", dmcl_high_1_5;
+}' "$bg"
+#阈值为 0.585（即 col 是 dmcl 的 1.5 倍）的时候，col 信号高于 dmcl 的有 202 个 bin，dmcl 高于 col 的有 15 个，注释看看情况
+#导出这 202 和 15 的 bed
+mkdir -p 09_bigwigCompare_RPGC/bin_annotation
+bg=09_bigwigCompare_RPGC/bedgraph/Col_0_vs_dmcl_4.log2ratio.RPGC.bin200.sorted.bedgraph
+outdir=09_bigwigCompare_RPGC/bin_annotation
+
+# Col_0 signal >= 1.5-fold dmcl_4
+awk 'BEGIN{OFS="\t"; i=0} $4>=0.585 {
+  i++;
+  print $1,$2,$3,"Col_0_high_bin_"i"_log2FC_"$4,0,"."
+}' "$bg" \
+> ${outdir}/Col_0_high.log2FC_ge0.585.bin200.bed
+
+# dmcl_4 signal >= 1.5-fold Col_0
+awk 'BEGIN{OFS="\t"; i=0} $4<=-0.585 {
+  i++;
+  print $1,$2,$3,"dmcl_4_high_bin_"i"_log2FC_"$4,0,"."
+}' "$bg" \
+> ${outdir}/dmcl_4_high.log2FC_le_minus0.585.bin200.bed
+
+wc -l ${outdir}/Col_0_high.log2FC_ge0.585.bin200.bed
+wc -l ${outdir}/dmcl_4_high.log2FC_le_minus0.585.bin200.bed
+#快速查看它们分布在哪些染色体上
+conda activate chipseeker_final
+cat > 09_bigwigCompare_RPGC/bin_annotation/annotate_diff_bins_chipseeker.R <<'EOF'
+library(ChIPseeker)
+library(GenomicFeatures)
+gff_file <- "ref/TAIR12/TAIR12_1Feb26.gff3"
+outdir <- "09_bigwigCompare_RPGC/bin_annotation"
+
+txdb <- makeTxDbFromGFF(gff_file)
+
+files <- c(
+  Col_0_high_1.5fold = file.path(outdir, "Col_0_high.log2FC_ge0.585.bin200.bed"),
+  dmcl_4_high_1.5fold = file.path(outdir, "dmcl_4_high.log2FC_le_minus0.585.bin200.bed")
+)
+
+simplify_annotation <- function(x) {
+  y <- rep("Other", length(x))
+  y[grepl("^Promoter", x)] <- "Promoter"
+  y[grepl("^Exon", x)] <- "Exon"
+  y[grepl("^Intron", x)] <- "Intron"
+  y[grepl("^5' UTR", x)] <- "5' UTR"
+  y[grepl("^3' UTR", x)] <- "3' UTR"
+  y[grepl("^Downstream", x)] <- "Downstream"
+  y[grepl("^Distal Intergenic", x)] <- "Distal Intergenic"
+  y
+}
+
+summary_list <- list()
+
+for (nm in names(files)) {
+  peak_file <- files[[nm]]
+
+  message("Annotating ", nm, " ...")
+
+  peakAnno <- annotatePeak(
+    peak_file,
+    TxDb = txdb,
+    tssRegion = c(-2000, 2000),
+    verbose = FALSE
+  )
+
+  df <- as.data.frame(peakAnno)
+  df$annotation_simple <- simplify_annotation(df$annotation)
+
+  write.table(
+    df,
+    file = file.path(outdir, paste0(nm, ".ChIPseeker.annotation.tsv")),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+  )
+
+  sm <- as.data.frame(table(df$annotation_simple))
+  colnames(sm) <- c("annotation", "bin_count")
+  sm$group <- nm
+  sm$percent <- round(sm$bin_count / sum(sm$bin_count) * 100, 2)
+  sm <- sm[, c("group", "annotation", "bin_count", "percent")]
+
+  write.table(
+    sm,
+    file = file.path(outdir, paste0(nm, ".annotation.summary.tsv")),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+  )
+
+  summary_list[[nm]] <- sm
+
+  pdf(file.path(outdir, paste0(nm, ".annotation_pie.pdf")), width = 7, height = 7)
+  print(plotAnnoPie(peakAnno))
+  dev.off()
+
+  pdf(file.path(outdir, paste0(nm, ".distance_to_TSS.pdf")), width = 7, height = 5)
+  print(plotDistToTSS(peakAnno, title = paste0(nm, " relative to TSS")))
+  dev.off()
+}
+
+all_summary <- do.call(rbind, summary_list)
+
+write.table(
+  all_summary,
+  file = file.path(outdir, "diff_bins.annotation.summary.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+message("Done.")
+EOF
+
+Rscript 09_bigwigCompare_RPGC/bin_annotation/annotate_diff_bins_chipseeker.R
+
+#关联到 gene 上
+mkdir -p 09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap
+outdir=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap
+DIFF_BIN=09_bigwigCompare_RPGC/bin_annotation/Col_0_high.log2FC_ge0.585.bin200.bed
+GENE_BED=11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed
+GENE_2K_BED=11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed
+#gene body 上
+bedtools intersect \
+  -a "$DIFF_BIN" \
+  -b "$GENE_BED" \
+  -wa -wb \
+> ${outdir}/Col_0_high_202bins.gene_body.overlap.pairs.bed
+
+cut -f10 ${outdir}/Col_0_high_202bins.gene_body.overlap.pairs.bed \
+  | sort -u \
+> ${outdir}/Col_0_high_202bins.gene_body.unique_genes.txt
+#gene body ±2k 上
+bedtools intersect \
+  -a "$DIFF_BIN" \
+  -b "$GENE_2K_BED" \
+  -wa -wb \
+> ${outdir}/Col_0_high_202bins.gene_body_plus2k.overlap.pairs.bed
+
+cut -f10 ${outdir}/Col_0_high_202bins.gene_body_plus2k.overlap.pairs.bed \
+  | sort -u \
+> ${outdir}/Col_0_high_202bins.gene_body_plus2k.unique_genes.txt
+# summary 表
+echo -e "group\ttotal_bins\tgene_body_pairs\tgene_body_unique_genes\tplus2k_pairs\tplus2k_unique_genes" \
+> ${outdir}/Col_0_high_202bins.gene_overlap.summary.tsv
+
+total_bins=$(wc -l < "$DIFF_BIN")
+gene_body_pairs=$(wc -l < ${outdir}/Col_0_high_202bins.gene_body.overlap.pairs.bed)
+gene_body_genes=$(wc -l < ${outdir}/Col_0_high_202bins.gene_body.unique_genes.txt)
+
+plus2k_pairs=$(wc -l < ${outdir}/Col_0_high_202bins.gene_body_plus2k.overlap.pairs.bed)
+plus2k_genes=$(wc -l < ${outdir}/Col_0_high_202bins.gene_body_plus2k.unique_genes.txt)
+
+echo -e "Col_0_high_202bins\t${total_bins}\t${gene_body_pairs}\t${gene_body_genes}\t${plus2k_pairs}\t${plus2k_genes}" \
+>> ${outdir}/Col_0_high_202bins.gene_overlap.summary.tsv
+
+cat ${outdir}/Col_0_high_202bins.gene_overlap.summary.tsv
+
+
+
+
+#给 peak 注释
+conda activate chipseeker_final
+mkdir -p 10_peak_annotation_local_X800
+
+cat > 10_peak_annotation_local_X800/run_chipseeker_annotation.R <<'EOF'
+library(ChIPseeker)
+library(GenomicFeatures)
+library(ggplot2)
+
+gff_file <- "ref/TAIR12/TAIR12_1Feb26.gff3"
+
+peak_dir <- "04_macs3_local_X800"
+out_dir <- "10_peak_annotation_local_X800"
+
+samples <- c("Col_0_1", "Col_0_2", "dmcl_4_1", "dmcl_4_2")
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+message("Building TxDb from GFF/GTF...")
+txdb <- makeTxDbFromGFF(gff_file)
+
+summary_list <- list()
+
+for (sample in samples) {
+    message("Annotating ", sample, " ...")
+
+    peak_file <- file.path(peak_dir, sample, paste0(sample, "_peaks.narrowPeak"))
+    sample_out <- file.path(out_dir, sample)
+    dir.create(sample_out, showWarnings = FALSE, recursive = TRUE)
+
+    if (!file.exists(peak_file)) {
+        warning("Peak file not found: ", peak_file)
+        next
+    }
+
+    peakAnno <- annotatePeak(
+        peak_file,
+        TxDb = txdb,
+        tssRegion = c(-2000, 2000),
+        verbose = FALSE
+    )
+
+    anno_df <- as.data.frame(peakAnno)
+
+    write.table(
+        anno_df,
+        file = file.path(sample_out, paste0(sample, ".ChIPseeker.annotation.tsv")),
+        sep = "\t",
+        quote = FALSE,
+        row.names = FALSE
+    )
+
+simplify_annotation <- function(x) {
+    y <- rep("Other", length(x))
+
+    y[grepl("^Promoter", x)] <- "Promoter"
+    y[grepl("^Exon", x)] <- "Exon"
+    y[grepl("^Intron", x)] <- "Intron"
+    y[grepl("^5' UTR", x)] <- "5' UTR"
+    y[grepl("^3' UTR", x)] <- "3' UTR"
+    y[grepl("^Downstream", x)] <- "Downstream"
+    y[grepl("^Distal Intergenic", x)] <- "Distal Intergenic"
+
+    return(y)
+}
+
+anno_df$annotation_simple <- simplify_annotation(anno_df$annotation)
+
+write.table(
+    anno_df,
+    file = file.path(sample_out, paste0(sample, ".ChIPseeker.annotation.tsv")),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+)
+
+anno_summary <- as.data.frame(table(anno_df$annotation_simple))
+colnames(anno_summary) <- c("annotation", "peak_count")
+anno_summary$sample <- sample
+anno_summary$peak_percent <- round(anno_summary$peak_count / sum(anno_summary$peak_count) * 100, 2)
+anno_summary <- anno_summary[, c("sample", "annotation", "peak_count", "peak_percent")]
+
+write.table(
+    anno_summary,
+    file = file.path(sample_out, paste0(sample, ".annotation.summary.simple.tsv")),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+)
+
+    write.table(
+        anno_summary,
+        file = file.path(sample_out, paste0(sample, ".annotation.summary.tsv")),
+        sep = "\t",
+        quote = FALSE,
+        row.names = FALSE
+    )
+
+    summary_list[[sample]] <- anno_summary
+
+    pdf(file.path(sample_out, paste0(sample, ".annotation_pie.pdf")), width = 7, height = 7)
+    print(plotAnnoPie(peakAnno))
+    dev.off()
+
+    pdf(file.path(sample_out, paste0(sample, ".distance_to_TSS.pdf")), width = 7, height = 5)
+    print(plotDistToTSS(peakAnno, title = paste0(sample, " distribution relative to TSS")))
+    dev.off()
+}
+
+combined_summary <- do.call(rbind, summary_list)
+
+write.table(
+    combined_summary,
+    file = file.path(out_dir, "all_samples.annotation.summary.tsv"),
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+)
+
+message("Done.")
+EOF
+Rscript 10_peak_annotation_local_X800/run_chipseeker_annotation.R
+
+# peak overlap gene统计（分两种 一种不带上下游2k  一种带上下游2k）
+#生成 gene body BED
+mkdir -p 11_peak_overlap_gene_local_X800/ref
+GFF="ref/TAIR12/TAIR12_1Feb26.gff3"
+GENE_BED="11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed"
+awk 'BEGIN{FS=OFS="\t"}
+$0 !~ /^#/ && $3=="gene" {
+    chr=$1
+    start=$4-1
+    end=$5
+    strand=$7
+    attr=$9
+
+    gene_id="NA"
+    if (match(attr, /ID=([^;]+)/, a)) {
+        gene_id=a[1]
+    }
+
+    print chr, start, end, gene_id, ".", strand
+}' "$GFF" \
+| sort -k1,1 -k2,2n \
+> "$GENE_BED"
+
+head "$GENE_BED"
+#生成gene size文件
+FAI="ref/TAIR12/TAIR12_1Feb26.Chr.fa.fai"
+cut -f1,2 "$FAI" > 11_peak_overlap_gene_local_X800/ref/TAIR12.genome.sizes
+#生成 gene body ±2kb BED
+bedtools slop \
+  -i 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed \
+  -g 11_peak_overlap_gene_local_X800/ref/TAIR12.genome.sizes \
+  -b 2000 \
+| sort -k1,1 -k2,2n \
+> 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed
+
+head 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed
+#统计每个样本的overlap gene
+mkdir -p 11_peak_overlap_gene_local_X800/results
+
+PEAK_DIR="04_macs3_local_X800"
+OUT_DIR="11_peak_overlap_gene_local_X800/results"
+
+GENE_BED="11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed"
+GENE_2K_BED="11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed"
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+    echo "Processing ${sample} ..."
+
+    peak_file="${PEAK_DIR}/${sample}/${sample}_peaks.narrowPeak"
+    sample_out="${OUT_DIR}/${sample}"
+    mkdir -p "$sample_out"
+
+    # 1. peak overlap gene body
+    bedtools intersect \
+      -a "$peak_file" \
+      -b "$GENE_BED" \
+      -wa -wb \
+      > "${sample_out}/${sample}.peak_overlap_gene_body.pairs.bed"
+
+    cut -f14 "${sample_out}/${sample}.peak_overlap_gene_body.pairs.bed" \
+      | sort -u \
+      > "${sample_out}/${sample}.peak_overlap_gene_body.unique_genes.txt"
+
+    cut -f1-10 "${sample_out}/${sample}.peak_overlap_gene_body.pairs.bed" \
+      | sort -u \
+      > "${sample_out}/${sample}.gene_body.overlapped_peaks.bed"
+
+    # 2. peak overlap gene body +/- 2 kb
+    bedtools intersect \
+      -a "$peak_file" \
+      -b "$GENE_2K_BED" \
+      -wa -wb \
+      > "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.pairs.bed"
+
+    cut -f14 "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.pairs.bed" \
+      | sort -u \
+      > "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.unique_genes.txt"
+
+    cut -f1-10 "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.pairs.bed" \
+      | sort -u \
+      > "${sample_out}/${sample}.gene_body_plus2k.overlapped_peaks.bed"
+
+    echo "Finished ${sample}"
+done
+#总的统计表
+OUT_DIR="11_peak_overlap_gene_local_X800/results"
+
+echo -e "sample\ttotal_peaks\tgene_body_peak_gene_pairs\tgene_body_overlapped_peaks\tgene_body_unique_genes\tplus2k_peak_gene_pairs\tplus2k_overlapped_peaks\tplus2k_unique_genes" \
+> 11_peak_overlap_gene_local_X800/peak_overlap_gene.summary.tsv
+
+for sample in Col_0_1 Col_0_2 dmcl_4_1 dmcl_4_2
+do
+    peak_file="04_macs3_local_X800/${sample}/${sample}_peaks.narrowPeak"
+    sample_out="${OUT_DIR}/${sample}"
+
+    total_peaks=$(wc -l < "$peak_file")
+
+    gene_body_pairs=$(wc -l < "${sample_out}/${sample}.peak_overlap_gene_body.pairs.bed")
+    gene_body_peaks=$(wc -l < "${sample_out}/${sample}.gene_body.overlapped_peaks.bed")
+    gene_body_genes=$(wc -l < "${sample_out}/${sample}.peak_overlap_gene_body.unique_genes.txt")
+
+    plus2k_pairs=$(wc -l < "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.pairs.bed")
+    plus2k_peaks=$(wc -l < "${sample_out}/${sample}.gene_body_plus2k.overlapped_peaks.bed")
+    plus2k_genes=$(wc -l < "${sample_out}/${sample}.peak_overlap_gene_body_plus2k.unique_genes.txt")
+
+    echo -e "${sample}\t${total_peaks}\t${gene_body_pairs}\t${gene_body_peaks}\t${gene_body_genes}\t${plus2k_pairs}\t${plus2k_peaks}\t${plus2k_genes}" \
+    >> 11_peak_overlap_gene_local_X800/peak_overlap_gene.summary.tsv
+done
+
+cat 11_peak_overlap_gene_local_X800/peak_overlap_gene.summary.tsv
