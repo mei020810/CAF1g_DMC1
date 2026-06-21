@@ -1270,3 +1270,287 @@ do
 done
 
 cat 11_peak_overlap_gene_local_X800/peak_overlap_gene.summary.tsv
+
+
+# 将差异区间与 gene ovealap 的列表跟黄老师给的表格 overlap
+mkdir -p 12_external_gene_list_overlap/input
+mkdir -p 12_external_gene_list_overlap/Col_0_high_202bins_plus2k
+#改名避免中文引号出问题
+cp 12_external_gene_list_overlap/input/"FileS3r1List of genes in the CO “hotspot” regions spanning the top 5% of CO rates within 50-kb sliding windows.tsv" \
+  12_external_gene_list_overlap/input/CO_hotspot_top5.tsv
+
+cp 12_external_gene_list_overlap/input/"FileS4r1List of genes in the COdesertregions spanning the top 5% longest genomic intervals without any COs.csv" \
+  12_external_gene_list_overlap/input/CO_desert_top5.csv
+
+vim run_overlap_external_tables.py
+#!/usr/bin/env python3
+import argparse
+import csv
+import os
+import re
+import zipfile
+import xml.etree.ElementTree as ET
+from collections import OrderedDict
+
+GENE_RE = re.compile(r"(AT[1-5CM]G\d{5}|AT[1-5]R\d+|AT[1-5]TE\d+)", re.IGNORECASE)
+
+
+def clean_gene(value):
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    if not s:
+        return None
+    # Remove common transcript suffix if the whole token is like AT1G01010.1
+    first = re.split(r"\s|;|,", s)[0]
+    first_no_tx = re.sub(r"\.\d+$", "", first)
+    m = GENE_RE.search(first_no_tx)
+    if m:
+        return m.group(1).upper()
+    m = GENE_RE.search(s)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
+def safe_name(s, max_len=80):
+    s = str(s).strip()
+    s = re.sub(r"[^A-Za-z0-9._+-]+", "_", s)
+    s = s.strip("_")
+    if not s:
+        s = "column"
+    return s[:max_len]
+
+
+def read_target_genes(path):
+    genes = OrderedDict()
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            # Usually one gene per line; keep robust for TSV/BED rows.
+            for token in re.split(r"\t|\s|,|;", line.strip()):
+                g = clean_gene(token)
+                if g:
+                    genes[g] = True
+                    break
+    return set(genes.keys())
+
+
+def write_list(path, values):
+    with open(path, "w", encoding="utf-8", newline="") as out:
+        for v in sorted(values):
+            out.write(v + "\n")
+
+
+def overlap_hotspot(path, target, outdir, summary_rows):
+    out_path = os.path.join(outdir, "CO_hotspot_top5_overlap.tsv")
+    all_genes = OrderedDict()
+    hit_genes = OrderedDict()
+    with open(path, encoding="utf-8-sig", newline="") as f, open(out_path, "w", encoding="utf-8", newline="") as out:
+        reader = csv.reader(f, delimiter="\t")
+        writer = csv.writer(out, delimiter="\t")
+        header = next(reader)
+        gene_idx = header.index("Locus Identifier") if "Locus Identifier" in header else 0
+        writer.writerow(["matched_gene"] + header)
+        for row in reader:
+            if not row or not any(x.strip() for x in row):
+                continue
+            # pad row
+            if len(row) < len(header):
+                row += [""] * (len(header) - len(row))
+            g = clean_gene(row[gene_idx])
+            if not g:
+                continue
+            all_genes[g] = True
+            if g in target:
+                hit_genes[g] = True
+                writer.writerow([g] + row)
+    write_list(os.path.join(outdir, "CO_hotspot_top5_overlap.genes.txt"), hit_genes.keys())
+    summary_rows.append(["CO_hotspot_top5", "Locus Identifier", len(all_genes), len(hit_genes), ";".join(sorted(hit_genes.keys()))])
+
+
+def overlap_desert(path, target, outdir, summary_rows):
+    out_path = os.path.join(outdir, "CO_desert_top5_overlap.tsv")
+    header = ["Locus Identifier", "Gene Model Name", "Gene Model Description", "Gene Model Type", "Primary Gene Symbol", "All Gene Symbols", "Extra"]
+    all_genes = OrderedDict()
+    hit_genes = OrderedDict()
+    with open(path, encoding="utf-8-sig", newline="") as f, open(out_path, "w", encoding="utf-8", newline="") as out:
+        writer = csv.writer(out, delimiter="\t")
+        writer.writerow(["matched_gene"] + header)
+        for line in f:
+            if not line.strip():
+                continue
+            row = line.rstrip("\n").split("\t")
+            if len(row) < len(header):
+                row += [""] * (len(header) - len(row))
+            elif len(row) > len(header):
+                row = row[:len(header)]
+            g = clean_gene(row[0])
+            if not g:
+                continue
+            all_genes[g] = True
+            if g in target:
+                hit_genes[g] = True
+                writer.writerow([g] + row)
+    write_list(os.path.join(outdir, "CO_desert_top5_overlap.genes.txt"), hit_genes.keys())
+    summary_rows.append(["CO_desert_top5", "Locus Identifier", len(all_genes), len(hit_genes), ";".join(sorted(hit_genes.keys()))])
+
+
+def xlsx_rows_first_sheet(path):
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            for si in root.findall(ns + "si"):
+                texts = []
+                for t in si.iter(ns + "t"):
+                    texts.append(t.text or "")
+                shared.append("".join(texts))
+        wb = ET.fromstring(z.read("xl/workbook.xml"))
+        rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        id_to_target = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        sheet = wb.find(ns + "sheets")[0]
+        rid = sheet.attrib[rel_ns + "id"]
+        target = id_to_target[rid]
+        sheet_path = "xl/" + target if not target.startswith("/") else target[1:]
+        sheet_path = sheet_path.replace("xl//", "xl/")
+        root = ET.fromstring(z.read(sheet_path))
+
+        def col_to_int(cell_ref):
+            m = re.match(r"([A-Z]+)(\d+)", cell_ref)
+            if not m:
+                return None
+            col = 0
+            for ch in m.group(1):
+                col = col * 26 + ord(ch) - 64
+            return col
+
+        def val(c):
+            t = c.attrib.get("t")
+            if t == "inlineStr":
+                return "".join(x.text or "" for x in c.iter(ns + "t"))
+            v = c.find(ns + "v")
+            if v is None:
+                return ""
+            raw = v.text or ""
+            if t == "s":
+                try:
+                    return shared[int(raw)]
+                except Exception:
+                    return raw
+            return raw
+
+        for row in root.find(ns + "sheetData").findall(ns + "row"):
+            cells = {}
+            max_col = 0
+            for c in row.findall(ns + "c"):
+                col = col_to_int(c.attrib.get("r", ""))
+                if col is None:
+                    continue
+                cells[col] = val(c)
+                max_col = max(max_col, col)
+            if max_col == 0:
+                continue
+            yield [cells.get(i, "") for i in range(1, max_col + 1)]
+
+
+def overlap_june9(path, target, outdir, summary_rows):
+    combined_path = os.path.join(outdir, "June9_all_columns_overlap.tsv")
+    per_col_dir = os.path.join(outdir, "June9_per_column")
+    os.makedirs(per_col_dir, exist_ok=True)
+    rows = list(xlsx_rows_first_sheet(path))
+    if not rows:
+        raise RuntimeError("No rows found in xlsx file")
+    headers = [str(x).strip() if str(x).strip() else f"Column_{i+1}" for i, x in enumerate(rows[0])]
+    ncols = len(headers)
+    col_genes = [OrderedDict() for _ in range(ncols)]
+    for row in rows[1:]:
+        if len(row) < ncols:
+            row += [""] * (ncols - len(row))
+        for i in range(ncols):
+            g = clean_gene(row[i])
+            if g:
+                col_genes[i][g] = True
+    used_names = set()
+    with open(combined_path, "w", encoding="utf-8", newline="") as out:
+        writer = csv.writer(out, delimiter="\t")
+        writer.writerow(["source_column", "matched_gene"])
+        for i, header in enumerate(headers):
+            all_genes = set(col_genes[i].keys())
+            hit = sorted(all_genes & target)
+            base = safe_name(header)
+            fname = base
+            k = 2
+            while fname in used_names:
+                fname = f"{base}_{k}"
+                k += 1
+            used_names.add(fname)
+            per_path = os.path.join(per_col_dir, f"{i+1:02d}_{fname}.overlap_genes.txt")
+            write_list(per_path, hit)
+            for g in hit:
+                writer.writerow([header, g])
+            summary_rows.append(["June9", header, len(all_genes), len(hit), ";".join(hit)])
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Overlap a target Arabidopsis gene list with CO hotspot/desert tables and every column in CO_association_data_June9.xlsx")
+    ap.add_argument("--target", required=True, help="Target gene list, one gene per line. For this analysis, use the Col_0-high 202-bin associated gene list.")
+    ap.add_argument("--hotspot", required=True, help="FileS3r1 CO hotspot TSV")
+    ap.add_argument("--desert", required=True, help="FileS4r1 CO desert file; handled as tab-delimited even if suffix is .csv")
+    ap.add_argument("--june9", required=True, help="CO_association_data_June9.xlsx")
+    ap.add_argument("--outdir", required=True, help="Output directory")
+    args = ap.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+    target = read_target_genes(args.target)
+    write_list(os.path.join(args.outdir, "target_genes.clean.txt"), target)
+    summary_rows = []
+    overlap_hotspot(args.hotspot, target, args.outdir, summary_rows)
+    overlap_desert(args.desert, target, args.outdir, summary_rows)
+    overlap_june9(args.june9, target, args.outdir, summary_rows)
+
+    summary_path = os.path.join(args.outdir, "overlap_summary.tsv")
+    with open(summary_path, "w", encoding="utf-8", newline="") as out:
+        writer = csv.writer(out, delimiter="\t")
+        writer.writerow(["source", "dataset_or_column", "source_unique_genes", "overlap_gene_count", "overlap_genes"])
+        writer.writerows(summary_rows)
+
+    print("Target genes:", len(target))
+    print("Wrote:", summary_path)
+    print("Output directory:", args.outdir)
+
+
+if __name__ == "__main__":
+    main()
+chmod +x run_overlap_external_tables.py
+
+#定义变量
+SCRIPT=run_overlap_external_tables.py
+HOTSPOT=12_external_gene_list_overlap/input/CO_hotspot_top5.tsv
+DESERT=12_external_gene_list_overlap/input/CO_desert_top5.csv
+JUNE9=12_external_gene_list_overlap/input/CO_association_data_June9.xlsx
+
+TARGET_GENE_BODY=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.txt
+TARGET_PLUS2K=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body_plus2k.unique_genes.txt
+#gene body 版本
+python "$SCRIPT" \
+  --target "$TARGET_GENE_BODY" \
+  --hotspot "$HOTSPOT" \
+  --desert "$DESERT" \
+  --june9 "$JUNE9" \
+  --outdir 12_external_gene_list_overlap/Col_0_high_202bins_gene_body
+#gene body plus2k版本
+python "$SCRIPT" \
+  --target "$TARGET_PLUS2K" \
+  --hotspot "$HOTSPOT" \
+  --desert "$DESERT" \
+  --june9 "$JUNE9" \
+  --outdir 12_external_gene_list_overlap/Col_0_high_202bins_gene_body_plus2k
+#查看summary
+cat 12_external_gene_list_overlap/Col_0_high_202bins_gene_body/overlap_summary.tsv
+cat 12_external_gene_list_overlap/Col_0_high_202bins_gene_body_plus2k/overlap_summary.tsv
+
