@@ -1032,7 +1032,42 @@ echo -e "Col_0_high_202bins\t${total_bins}\t${gene_body_pairs}\t${gene_body_gene
 >> ${outdir}/Col_0_high_202bins.gene_overlap.summary.tsv
 
 cat ${outdir}/Col_0_high_202bins.gene_overlap.summary.tsv
+#protein_coding版本
+mkdir -p 09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap_protein_coding
+outdir="09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap_protein_coding"
+GENE_BED="11_peak_overlap_gene_local_X800/ref_filtered/TAIR12.protein_coding.gene_body.bed"
+GENE_2K_BED="11_peak_overlap_gene_local_X800/ref_filtered/TAIR12.protein_coding.gene_body.plus2k.bed"
 
+# gene body
+bedtools intersect \
+  -a "$DIFF_BIN" \
+  -b "$GENE_BED" \
+  -wa -wb \
+> ${outdir}/Col_0_high_202bins.protein_coding.gene_body.overlap.pairs.bed
+
+cut -f10 ${outdir}/Col_0_high_202bins.protein_coding.gene_body.overlap.pairs.bed \
+  | sort -u \
+> ${outdir}/Col_0_high_202bins.protein_coding.gene_body.unique_genes.txt
+
+# gene body +/- 2 kb
+bedtools intersect \
+  -a "$DIFF_BIN" \
+  -b "$GENE_2K_BED" \
+  -wa -wb \
+> ${outdir}/Col_0_high_202bins.protein_coding.gene_body_plus2k.overlap.pairs.bed
+
+cut -f10 ${outdir}/Col_0_high_202bins.protein_coding.gene_body_plus2k.overlap.pairs.bed \
+  | sort -u \
+> ${outdir}/Col_0_high_202bins.protein_coding.gene_body_plus2k.unique_genes.txt
+#summary表
+echo -e "definition\ttotal_bins\tunique_genes" \
+> ${outdir}/Col_0_high_202bins.protein_coding.gene_overlap.summary.tsv
+echo -e "gene_body\t$(wc -l < "$DIFF_BIN")\t$(wc -l < ${outdir}/Col_0_high_202bins.protein_coding.gene_body.unique_genes.txt)" \
+>> ${outdir}/Col_0_high_202bins.protein_coding.gene_overlap.summary.tsv
+echo -e "gene_body_plus2k\t$(wc -l < "$DIFF_BIN")\t$(wc -l < ${outdir}/Col_0_high_202bins.protein_coding.gene_body_plus2k.unique_genes.txt)" \
+>> ${outdir}/Col_0_high_202bins.protein_coding.gene_overlap.summary.tsv
+
+cat ${outdir}/Col_0_high_202bins.protein_coding.gene_overlap.summary.tsv
 
 
 
@@ -1183,6 +1218,27 @@ $0 !~ /^#/ && $3=="gene" {
 > "$GENE_BED"
 
 head "$GENE_BED"
+#只含编码蛋白基因的bed
+mkdir -p 11_peak_overlap_gene_local_X800/ref_filtered
+GFF="ref/TAIR12/TAIR12_1Feb26.gff3"
+awk 'BEGIN{FS=OFS="\t"}
+$0 !~ /^#/ && $3=="gene" && $9 ~ /locus_biotype=protein_coding/ {
+    chr=$1
+    start=$4-1
+    end=$5
+    strand=$7
+    attr=$9
+
+    gene_id="NA"
+    if (match(attr, /ID=([^;]+)/, a)) {
+        gene_id=a[1]
+    }
+
+    print chr, start, end, gene_id, ".", strand
+}' "$GFF" \
+| sort -k1,1 -k2,2n \
+> 11_peak_overlap_gene_local_X800/ref_filtered/TAIR12.protein_coding.gene_body.bed
+
 #生成gene size文件
 FAI="ref/TAIR12/TAIR12_1Feb26.Chr.fa.fai"
 cut -f1,2 "$FAI" > 11_peak_overlap_gene_local_X800/ref/TAIR12.genome.sizes
@@ -1195,12 +1251,18 @@ bedtools slop \
 > 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed
 
 head 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed
+#生成protein-coding gene body±2k bed
+GENOME="11_peak_overlap_gene_local_X800/ref/TAIR12.genome.sizes"
+bedtools slop \
+  -i 11_peak_overlap_gene_local_X800/ref_filtered/TAIR12.protein_coding.gene_body.bed \
+  -g "$GENOME" \
+  -b 2000 \
+| sort -k1,1 -k2,2n \
+> 11_peak_overlap_gene_local_X800/ref_filtered/TAIR12.protein_coding.gene_body.plus2k.bed
 #统计每个样本的overlap gene
 mkdir -p 11_peak_overlap_gene_local_X800/results
-
 PEAK_DIR="04_macs3_local_X800"
 OUT_DIR="11_peak_overlap_gene_local_X800/results"
-
 GENE_BED="11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed"
 GENE_2K_BED="11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.plus2k.bed"
 
@@ -1270,6 +1332,1226 @@ do
 done
 
 cat 11_peak_overlap_gene_local_X800/peak_overlap_gene.summary.tsv
+
+#TAIR12和TAIR10基因ID转换
+MAP=ref/TAIR12/TAIR12v1Feb26_vs_Araport11_nuclearchrom.tsv
+awk -F'\t' 'NR>1{count[$7]++} END{for (s in count) print count[s], s}' "$MAP" \
+  | sort -k1,1nr
+#Araport11 → TAIR12 对照表
+mkdir -p ref/TAIR12/id_mapping
+awk -F'\t' 'BEGIN{OFS="\t"}
+NR>1 &&
+$1!="-" && $2!="-" &&
+$1!="NA" && $2!="NA" &&
+$1!="" && $2!="" {
+    print $2, $1, $3, $5, $7
+}' "$MAP" \
+| sort -u \
+> ref/TAIR12/id_mapping/Araport11_to_TAIR12.ID_map.clean.tsv
+#TAIR12 → Araport11 对照表
+awk -F'\t' 'BEGIN{OFS="\t"}
+NR>1 &&
+$1!="-" && $2!="-" &&
+$1!="NA" && $2!="NA" &&
+$1!="" && $2!="" {
+    print $1, $2, $3, $5, $7
+}' "$MAP" \
+| sort -u \
+> ref/TAIR12/id_mapping/TAIR12_to_Araport11.ID_map.clean.tsv
+# 检查一个 Araport11_ID 对应多个 TAIR12_ID的情况
+cut -f1,2 ref/TAIR12/Araport11_to_TAIR12.ID_map.tsv \
+| sort -u \
+| cut -f1 \
+| sort \
+| uniq -c \
+| awk '$1>1' \
+| head
+# 一个 TAIR12_ID 对应多个 Araport11_ID的情况
+cut -f1,2 ref/TAIR12/TAIR12_to_Araport11.ID_map.tsv \
+| sort -u \
+| cut -f1 \
+| sort \
+| uniq -c \
+| awk '$1>1' \
+| head
+#转换表格ID
+mkdir -p 12_external_gene_list_overlap/TAIR12_converted
+
+cat > 12_external_gene_list_overlap/TAIR12_converted/convert_June9_to_TAIR12.py <<'PY'
+#!/usr/bin/env python3
+
+import os
+import re
+import argparse
+import pandas as pd
+from collections import defaultdict
+
+def read_table(path, sheet=0):
+    lower = path.lower()
+    if lower.endswith(".xlsx") or lower.endswith(".xls"):
+        return pd.read_excel(path, sheet_name=sheet, dtype=str)
+    elif lower.endswith(".csv"):
+        return pd.read_csv(path, dtype=str)
+    else:
+        return pd.read_csv(path, sep="\t", dtype=str)
+
+def load_map(path):
+    # columns: Araport11_ID, TAIR12_ID, TAIR12_Type, Araport11_Type, Status
+    mp = defaultdict(set)
+    status = defaultdict(set)
+
+    with open(path) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 5:
+                continue
+            araport, tair12, tair12_type, araport_type, st = parts[:5]
+            if araport in {"", "-", "NA"} or tair12 in {"", "-", "NA"}:
+                continue
+            mp[araport.upper()].add(tair12.upper())
+            status[araport.upper()].add(st)
+
+    return mp, status
+
+def load_background(path):
+    bg = set()
+    with open(path) as f:
+        for line in f:
+            x = line.strip().upper()
+            if x:
+                bg.add(x)
+    return bg
+
+def extract_gene_ids(x):
+    if pd.isna(x):
+        return []
+    text = str(x).upper()
+    # 抓 AT1G18820、AT4R000063 这类 nuclear gene/locus IDs
+    pat = re.compile(r"AT[1-5][A-Z][0-9]{5,6}(?:\.[0-9]+)?", re.I)
+    ids = []
+    for m in pat.findall(text):
+        g = re.sub(r"\.[0-9]+$", "", m.upper())
+        ids.append(g)
+    return ids
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True, help="customer table: xlsx/csv/tsv")
+    parser.add_argument("--map", required=True, help="Araport11_to_TAIR12.ID_map.clean.tsv")
+    parser.add_argument("--background", required=False, help="optional TAIR12 background IDs; used to keep already-TAIR12 IDs")
+    parser.add_argument("--outdir", required=True)
+    parser.add_argument("--sheet", default=0)
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+    list_dir = os.path.join(args.outdir, "TAIR12_gene_lists_by_column")
+    os.makedirs(list_dir, exist_ok=True)
+
+    df = read_table(args.input, sheet=args.sheet)
+    mp, map_status = load_map(args.map)
+    bg = load_background(args.background) if args.background else set()
+
+    converted_df = pd.DataFrame(index=df.index)
+    detail_rows = []
+    summary_rows = []
+
+    for col in df.columns:
+        col_converted_cells = []
+        col_raw_ids = set()
+        col_tair12_ids = set()
+        col_unmapped = set()
+        col_multimap = set()
+        col_kept = set()
+
+        for idx, val in df[col].items():
+            raw_ids = extract_gene_ids(val)
+            mapped_for_cell = []
+
+            for raw in raw_ids:
+                col_raw_ids.add(raw)
+
+                if raw in mp:
+                    targets = sorted(mp[raw])
+                    mapped_for_cell.extend(targets)
+                    col_tair12_ids.update(targets)
+
+                    if len(targets) > 1:
+                        col_multimap.add(raw)
+
+                    for t in targets:
+                        detail_rows.append({
+                            "dataset": col,
+                            "row_index": idx + 1,
+                            "original_id": raw,
+                            "TAIR12_ID": t,
+                            "mapping_type": "mapped_from_Araport11",
+                            "map_status": ";".join(sorted(map_status.get(raw, [])))
+                        })
+
+                elif raw in bg:
+                    # 这个 ID 已经是 TAIR12 background 中的合法 ID，保留
+                    mapped_for_cell.append(raw)
+                    col_tair12_ids.add(raw)
+                    col_kept.add(raw)
+
+                    detail_rows.append({
+                        "dataset": col,
+                        "row_index": idx + 1,
+                        "original_id": raw,
+                        "TAIR12_ID": raw,
+                        "mapping_type": "kept_as_TAIR12_or_shared_ID",
+                        "map_status": "not_in_map_but_in_TAIR12_background"
+                    })
+
+                else:
+                    col_unmapped.add(raw)
+
+                    detail_rows.append({
+                        "dataset": col,
+                        "row_index": idx + 1,
+                        "original_id": raw,
+                        "TAIR12_ID": "",
+                        "mapping_type": "unmapped",
+                        "map_status": "not_in_map_or_background"
+                    })
+
+            mapped_for_cell = sorted(set(mapped_for_cell))
+            col_converted_cells.append(";".join(mapped_for_cell))
+
+        converted_df[col] = col_converted_cells
+
+        safe_col = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(col))
+        list_file = os.path.join(list_dir, f"{safe_col}.TAIR12_IDs.txt")
+
+        with open(list_file, "w") as out:
+            for g in sorted(col_tair12_ids):
+                out.write(g + "\n")
+
+        summary_rows.append({
+            "dataset": col,
+            "raw_unique_ids": len(col_raw_ids),
+            "TAIR12_unique_ids": len(col_tair12_ids),
+            "kept_as_TAIR12_or_shared_IDs": len(col_kept),
+            "original_IDs_with_multiple_TAIR12_targets": len(col_multimap),
+            "unmapped_unique_ids": len(col_unmapped),
+            "TAIR12_gene_list_file": list_file
+        })
+
+    converted_df.to_csv(os.path.join(args.outdir, "June9_39cols.converted_to_TAIR12.wide.tsv"), sep="\t", index=False)
+
+    pd.DataFrame(detail_rows).to_csv(
+        os.path.join(args.outdir, "June9_39cols.Araport11_to_TAIR12.mapping_detail.tsv"),
+        sep="\t",
+        index=False
+    )
+
+    pd.DataFrame(summary_rows).to_csv(
+        os.path.join(args.outdir, "June9_39cols.Araport11_to_TAIR12.mapping_summary.tsv"),
+        sep="\t",
+        index=False
+    )
+
+    print("Done.")
+    print("Converted wide table:", os.path.join(args.outdir, "June9_39cols.converted_to_TAIR12.wide.tsv"))
+    print("Mapping detail:", os.path.join(args.outdir, "June9_39cols.Araport11_to_TAIR12.mapping_detail.tsv"))
+    print("Mapping summary:", os.path.join(args.outdir, "June9_39cols.Araport11_to_TAIR12.mapping_summary.tsv"))
+    print("Per-column TAIR12 gene lists:", list_dir)
+
+if __name__ == "__main__":
+    main()
+PY
+awk 'BEGIN{FS=OFS="\t"}
+$0 !~ /^#/ && $3=="gene" {
+    if (match($9, /ID=([^;]+)/, a)) print a[1]
+}' ref/TAIR12/TAIR12_1Feb26.gff3 \
+| sort -u \
+> 12_gene_set_enrichment_permutation/ref/TAIR12.all_gene_loci.background_genes.txt
+
+python3 12_external_gene_list_overlap/TAIR12_converted/convert_June9_to_TAIR12.py \
+  --input 12_external_gene_list_overlap/input/CO_association_data_June9.xlsx \
+  --map ref/TAIR12/id_mapping/Araport11_to_TAIR12.ID_map.clean.tsv \
+  --background 12_gene_set_enrichment_permutation/ref/TAIR12.all_gene_loci.background_genes.txt \
+  --outdir 12_external_gene_list_overlap/TAIR12_converted
+#将overlap的基因列表转成 tair10 版本
+QUERY=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.txt
+MAP=ref/TAIR12/id_mapping/TAIR12_to_Araport11.ID_map.clean.tsv
+OUT=12_external_gene_list_overlap/TAIR12_converted
+
+# 转换明细：每个 TAIR12 gene 对应到哪些 Araport11 IDs
+awk 'BEGIN{FS=OFS="\t"}
+NR==FNR {
+    map[$1] = (map[$1]=="" ? $2 : map[$1] ";" $2)
+    status[$1] = (status[$1]=="" ? $5 : status[$1] ";" $5)
+    next
+}
+{
+    g=$1
+    if (g in map) {
+        print g, map[g], status[g], "mapped"
+    } else {
+        print g, "-", "-", "unmapped"
+    }
+}' "$MAP" "$QUERY" \
+> ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.mapping_detail.tsv
+
+# 只提取转换成功的 Araport11 IDs
+awk -F'\t' 'NR>=1 && $4=="mapped" {
+    n=split($2,a,";")
+    for(i=1;i<=n;i++) print a[i]
+}' ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.mapping_detail.tsv \
+| sort -u \
+> ${OUT}/Col_0_high_202bins.gene_body.Araport11_IDs.txt
+
+# 没有映射上的 TAIR12 genes
+awk -F'\t' '$4=="unmapped"{print $1}' \
+  ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.mapping_detail.tsv \
+> ${OUT}/Col_0_high_202bins.gene_body.unmapped_TAIR12_IDs.txt
+
+# summary
+echo -e "input_TAIR12_genes\tmapped_TAIR12_genes\tunmapped_TAIR12_genes\tunique_Araport11_IDs" \
+> ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.summary.tsv
+
+input_n=$(wc -l < "$QUERY")
+mapped_n=$(awk -F'\t' '$4=="mapped"{print $1}' ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.mapping_detail.tsv | sort -u | wc -l)
+unmapped_n=$(awk -F'\t' '$4=="unmapped"{print $1}' ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.mapping_detail.tsv | sort -u | wc -l)
+araport_n=$(wc -l < ${OUT}/Col_0_high_202bins.gene_body.Araport11_IDs.txt)
+
+echo -e "${input_n}\t${mapped_n}\t${unmapped_n}\t${araport_n}" \
+>> ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.summary.tsv
+cat ${OUT}/Col_0_high_202bins.gene_body.TAIR12_to_Araport11.summary.tsv
+
+#老师叫用liftoff转换看看
+conda create -n liftoff -c conda-forge -c bioconda liftoff
+conda activate liftoff
+#检查染色体名字是否一致
+grep '^>' ref/TAIR12/TAIR12_1Feb26.Chr.fa | head
+grep '^>' ref/TAIR10/TAIR10_chr_all.fas | head
+grep -v '^#' ref/TAIR12/TAIR12_1Feb26.gff3 | cut -f1 | sort -u
+grep -v '^#' ref/TAIR10/TAIR10_GFF3_genes.gff  | cut -f1 | sort -u
+#10版本有叶绿体和线粒体基因组，清洗一下
+mkdir -p ref/TAIR10/nuclear_only
+samtools faidx ref/TAIR10/TAIR10_chr_all.fas Chr1 Chr2 Chr3 Chr4 Chr5 \
+  > ref/TAIR10/nuclear_only/TAIR10_chr1_5.fas
+awk 'BEGIN{OFS="\t"} /^#/ || $1 ~ /^Chr[1-5]$/' \
+  ref/TAIR10/TAIR10_GFF3_genes.gff \
+  > ref/TAIR10/nuclear_only/TAIR10_GFF3_genes.Chr1_5.gff
+#Liftoff染色体对应表
+cat > ref/TAIR10/nuclear_only/TAIR12_to_TAIR10.chroms.txt <<EOF
+Chr1,Chr1
+Chr2,Chr2
+Chr3,Chr3
+Chr4,Chr4
+Chr5,Chr5
+EOF
+#Liftoff转换
+liftoff \
+  -g ref/TAIR12/TAIR12_1Feb26.gff3 \
+  -o ref/TAIR12/TAIR12_on_TAIR10.liftoff.gff3 \
+  -u ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.txt \
+  -p 16 \
+  -chroms ref/TAIR10/nuclear_only/TAIR12_to_TAIR10.chroms.txt \
+  ref/TAIR10/nuclear_only/TAIR10_chr1_5.fas \
+  ref/TAIR12/TAIR12_1Feb26.Chr.fa
+# 未成功映射的 feature/gene
+wc -l ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.txt
+head ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.txt
+# 输出中 partial/low_identity 标记
+grep -c 'partial_mapping=True' ref/TAIR12/TAIR12_on_TAIR10.liftoff.gff3
+grep -c 'low_identity=True' ref/TAIR12/TAIR12_on_TAIR10.liftoff.gff3
+# 简单看 gene 数量
+grep -v '^#' ref/TAIR12/TAIR12_1Feb26.gff3 | awk '$3=="gene"' | wc -l
+grep -v '^#' ref/TAIR12/TAIR12_on_TAIR10.liftoff.gff3 | awk '$3=="gene"' | wc -l
+#查看 tair10 gff 的基因数量
+grep -v '^#' ref/TAIR10/nuclear_only/TAIR10_GFF3_genes.Chr1_5.gff \
+  | awk '$3=="gene"' \
+  | wc -l
+#查看unmapped gene 分布在哪些染色体上
+awk '
+NR==FNR{
+  u[$1]=1
+  next
+}
+$3=="gene"{
+  id=""
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    if(a[i] ~ /^ID=/){
+      id=a[i]
+      sub(/^ID=/,"",id)
+    }
+  }
+  if(id in u){
+    print $1
+  }
+}' ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.txt \
+   ref/TAIR12/TAIR12_1Feb26.gff3 \
+| sort \
+| uniq -c
+#导出 unmapped gene 的基本信息方便后续判断
+awk '
+BEGIN{OFS="\t"}
+NR==FNR{
+  u[$1]=1
+  next
+}
+$3=="gene"{
+  id="."
+  name="."
+  biotype="."
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    if(a[i] ~ /^ID=/){
+      id=a[i]
+      sub(/^ID=/,"",id)
+    }
+    if(a[i] ~ /^Name=/){
+      name=a[i]
+      sub(/^Name=/,"",name)
+    }
+    if(a[i] ~ /biotype=/){
+      biotype=a[i]
+      sub(/^.*biotype=/,"",biotype)
+      sub(/;.*/,"",biotype)
+    }
+  }
+  if(id in u){
+    print $1,$4,$5,$7,id,name,biotype,$5-$4+1
+  }
+}' ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.txt \
+   ref/TAIR12/TAIR12_1Feb26.gff3 \
+> ref/TAIR12/TAIR12_to_TAIR10.liftoff.unmapped.gene_info.tsv
+#提取Liftoff 后的TAIR12 gene BED
+awk '
+BEGIN{OFS="\t"}
+$3=="gene"{
+  id="."
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    if(a[i] ~ /^ID=/){
+      id=a[i]
+      sub(/^ID=/,"",id)
+    }
+  }
+  print $1,$4-1,$5,id,0,$7
+}' ref/TAIR12/TAIR12_on_TAIR10.liftoff.gff3 \
+> ref/TAIR12/TAIR12_genes_on_TAIR10.bed
+#提取TAIR10 的gene BED
+awk '
+BEGIN{OFS="\t"}
+$3=="gene"{
+  id="."
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    if(a[i] ~ /^ID=/){
+      id=a[i]
+      sub(/^ID=/,"",id)
+    }
+  }
+  print $1,$4-1,$5,id,0,$7
+}' ref/TAIR10/nuclear_only/TAIR10_GFF3_genes.Chr1_5.gff \
+> ref/TAIR10/nuclear_only/TAIR10_genes.bed
+#TAIR10 gene ID集合
+awk '
+$3=="gene"{
+  id=""
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    if(a[i] ~ /^ID=/){
+      id=a[i]
+      sub(/^ID=/,"",id)
+      sub(/^gene:/,"",id)
+    }
+  }
+  if(id!="") print id
+}' ref/TAIR10/nuclear_only/TAIR10_GFF3_genes.Chr1_5.gff \
+| sort -u \
+> ref/TAIR10/nuclear_only/TAIR10_gene_ids.txt
+#做同链overlap
+bedtools intersect \
+  -a ref/TAIR12/TAIR12_genes_on_TAIR10.bed \
+  -b ref/TAIR10/nuclear_only/TAIR10_genes.bed \
+  -s \
+  -wo \
+> ref/TAIR12/TAIR12_liftoff_vs_TAIR10_gene.overlap.tsv
+#选择每个 TAIR12 gene overlap 最大的 TAIR10 gene
+awk '
+BEGIN{OFS="\t"}
+{
+  tair12_gene=$4
+  tair10_gene=$10
+  overlap=$13
+  a_len=$3-$2
+  b_len=$9-$8
+  frac_a=overlap/a_len
+  frac_b=overlap/b_len
+  score=(frac_a<frac_b ? frac_a : frac_b)
+  print tair12_gene,tair10_gene,overlap,a_len,b_len,frac_a,frac_b,score
+}' ref/TAIR12/TAIR12_liftoff_vs_TAIR10_gene.overlap.tsv \
+| sort -k1,1 -k8,8nr \
+| awk 'BEGIN{OFS="\t"; print "TAIR12_gene","TAIR10_gene","overlap","TAIR12_len","TAIR10_len","frac_TAIR12","frac_TAIR10","score"} !seen[$1]++' \
+> ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.tsv
+#只保留overlap > 50% 的版本
+awk 'BEGIN{OFS="\t"} NR==1 || ($6>=0.5 && $7>=0.5)' \
+  ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.tsv \
+> ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.recip50.tsv
+wc -l ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.tsv
+wc -l ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.recip50.tsv
+#将 bins 关联到的基因转换成 TAIR10 版本
+in=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.txt
+out=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.converted_to_TAIR10.tsv
+awk '
+BEGIN{
+  OFS="\t"
+  print "TAIR12_gene","TAIR10_gene","method"
+}
+ARGIND==1{
+  tair10[$1]=1
+  next
+}
+ARGIND==2 && FNR>1{
+  rec[$1]=$2
+  next
+}
+ARGIND==3 && FNR>1{
+  best[$1]=$2
+  next
+}
+ARGIND==4{
+  g=$1
+  if(g=="" || g=="TAIR12_gene" || g=="gene" || g=="Gene") next
+  if(g in tair10){
+    print g,g,"same_id_in_TAIR10"
+  }
+  else if(g in rec){
+    print g,rec[g],"liftoff_recip50"
+  }
+  else if(g in best){
+    print g,best[g],"liftoff_best_overlap_lowconf"
+  }
+  else{
+    print g,"NA","unmapped"
+  }
+}' \
+ref/TAIR10/nuclear_only/TAIR10_gene_ids.txt \
+ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.recip50.tsv \
+ref/TAIR12/TAIR12_to_TAIR10.by_liftoff.best.tsv \
+"$in" \
+> "$out"
+#统计不同来源的转换数量
+cut -f3 "$out" | tail -n +2 | sort | uniq -c
+
+#能匹配上的就只有43个，试图把他给的表格转换成12版本
+#直接用前面生成的映射表
+IDMAP=ref/TAIR12/id_mapping/Araport11_to_TAIR12.ID_map.clean.tsv
+CLIENT=12_external_gene_list_overlap/input/33602_total_genelist.clean.ids.txt
+awk '
+BEGIN{
+  OFS="\t"
+  print "client_Araport11_gene","TAIR12_gene","TAIR12_Type","Araport11_Type","Status","method"
+}
+NR==FNR{
+  key=$1
+  val=$2"\t"$3"\t"$4"\t"$5
+  map[key]=map[key] val "\n"
+  next
+}
+{
+  g=$1
+  if(g=="") next
+  if(g in map){
+    n=split(map[g],a,"\n")
+    for(i=1;i<=n;i++){
+      if(a[i]!=""){
+        print g,a[i],"official_TAIR12_vs_Araport11"
+      }
+    }
+  }else{
+    print g,"NA","NA","NA","unmapped_by_official_table","unmapped"
+  }
+}' "$IDMAP" "$CLIENT" \
+> 33602_genelist.converted_to_TAIR12.official.tsv
+#统计转换情况
+cut -f6 33602_genelist.converted_to_TAIR12.official.tsv \
+| tail -n +2 \
+| sort \
+| uniq -c
+
+cut -f5 33602_genelist.converted_to_TAIR12.official.tsv \
+| tail -n +2 \
+| sort \
+| uniq -c \
+| sort -k1,1nr
+#生成12版本的gene list
+awk 'NR>1 && $2!="NA"{print $2}' \
+  33602_genelist.converted_to_TAIR12.official.tsv \
+| sort -u \
+> 33602_converted_TAIR12_genes.official.txt
+
+wc -l 33602_converted_TAIR12_genes.official.txt
+#与bin 对应基因做交集
+MY12=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.txt
+
+comm -12 \
+  "$MY12" \
+  33602_converted_TAIR12_genes.official.txt \
+> 09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/overlap_my_TAIR12_vs_client_converted_TAIR12.official.txt
+
+wc -l \
+  "$MY12" \
+  33602_converted_TAIR12_genes.official.txt \
+  09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/overlap_my_TAIR12_vs_client_converted_TAIR12.official.txt
+#转换后结果仍然只有43 个
+
+#看看那43个不匹配的基因是否属于tair10 的非gene feature
+#过滤核染色体
+awk 'BEGIN{OFS="\t"} /^#/ || $1 ~ /^Chr[1-5]$/' \
+  ref/TAIR10/TAIR10_GFF3_genes_transposons.gff \
+> ref/TAIR10/nuclear_only/TAIR10_GFF3_genes_transposons.Chr1_5.gff
+#把不匹配的基因id分出来
+DIR=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap
+out=$DIR/Col_0_high_202bins.gene_body.unique_genes.converted_to_TAIR10.tsv
+awk -F'\t' '
+NR>1 && ($2=="NA" || $3=="unmapped"){
+  print $1
+}' "$out" \
+| sort -u \
+> $DIR/unmapped_67.genes.txt
+#匹配上的
+awk -F'\t' '
+NR>1 && $2!="NA"{
+  print $1
+}' "$out" \
+| sort -u \
+> $DIR/matched_43.TAIR12_genes.txt
+#看在tair10里对应什么
+MY12=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body_plus2k.unique_genes.txt
+GFF10=ref/TAIR10/nuclear_only/TAIR10_GFF3_genes_transposons.Chr1_5.gff
+OUTDIR=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/version_check
+mkdir -p "$OUTDIR"
+awk -F'\t' '
+BEGIN{
+  OFS="\t"
+  print "query_id","tair10_chr","start","end","strand","feature_type","match_field","matched_value","attributes"
+}
+NR==FNR{
+  q[$1]=1
+  next
+}
+$0 !~ /^#/{
+  id=name=""
+
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    split(a[i],kv,"=")
+    if(kv[1]=="ID"){
+      id=kv[2]
+      sub(/^gene:/,"",id)
+    }
+    if(kv[1]=="Name"){
+      name=kv[2]
+      sub(/^gene:/,"",name)
+    }
+  }
+
+  if(id in q){
+    print id,$1,$4,$5,$7,$3,"ID",id,$9
+  }
+  if(name in q && name!=id){
+    print name,$1,$4,$5,$7,$3,"Name",name,$9
+  }
+}' \
+"$DIR/matched_43.TAIR12_genes.txt" \
+"$GFF10" \
+> "$OUTDIR/matched_43.annotation_in_TAIR10_all_features.tsv"
+#分类汇总表
+awk -F'\t' '
+BEGIN{
+  OFS="\t"
+  print "query_id","TAIR10_class","feature_types"
+}
+NR==FNR{
+  if(FNR==1) next
+
+  q=$1
+  type=$6
+
+  hit[q]=1
+  if(type=="gene"){
+    has_gene[q]=1
+  }
+
+  key=q SUBSEP type
+  if(!(key in seen)){
+    types[q]=(types[q]=="" ? type : types[q]","type)
+    seen[key]=1
+  }
+  next
+}
+{
+  q=$1
+
+  if(has_gene[q]){
+    cls="TAIR10_gene"
+  }else if(hit[q]){
+    cls="TAIR10_non_gene_feature"
+  }else{
+    cls="not_found_in_TAIR10_all_features"
+  }
+
+  print q,cls,(types[q]=="" ? "NA" : types[q])
+}' \
+"$OUTDIR/matched_43.annotation_in_TAIR10_all_features.tsv" \
+"$DIR/matched_43.TAIR12_genes.txt" \
+> "$OUTDIR/matched_43.TAIR10_feature_class.summary.tsv"
+#看属于什么分类
+cut -f2 "$OUTDIR/matched_43.TAIR10_feature_class.summary.tsv" \
+| tail -n +2 \
+| sort \
+| uniq -c
+#看67个未匹配基因在12上的位置
+GFF12=ref/TAIR12/TAIR12_1Feb26.gff3
+awk -F'\t' '
+BEGIN{
+  OFS="\t"
+  print "TAIR12_gene","chr","start","end","strand","feature_type","length","match_field","attributes"
+}
+NR==FNR{
+  q[$1]=1
+  next
+}
+$0 !~ /^#/{
+  id=name=""
+
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    split(a[i],kv,"=")
+    if(kv[1]=="ID"){
+      id=kv[2]
+      sub(/^gene:/,"",id)
+    }
+    if(kv[1]=="Name"){
+      name=kv[2]
+      sub(/^gene:/,"",name)
+    }
+  }
+
+  if(id in q){
+    print id,$1,$4,$5,$7,$3,$5-$4+1,"ID",$9
+  }
+  if(name in q && name!=id){
+    print name,$1,$4,$5,$7,$3,$5-$4+1,"Name",$9
+  }
+}' \
+"$DIR/unmapped_67.genes.txt" \
+"$GFF12" \
+> "$OUTDIR/unmatched_67.position_in_TAIR12.tsv"
+#查看表格 67个都能找到坐标，看在染色体上的分布
+cut -f2 "$OUTDIR/unmatched_67.position_in_TAIR12.tsv" \
+| tail -n +2 \
+| sort \
+| uniq -c
+#看是否集中在某些染色体区域、端部区域、重复区或 TAIR12 特异/新增注释区域
+BIN=09_bigwigCompare_RPGC/bin_annotation/Col_0_high.log2FC_ge0.585.bin200.bed
+GFF12=ref/TAIR12/TAIR12_1Feb26.gff3
+FA12=ref/TAIR12/TAIR12_1Feb26.Chr.fa
+MAP12=ref/TAIR12/TAIR12v1Feb26_vs_Araport11_nuclearchrom.tsv
+
+OUTDIR=09_bigwigCompare_RPGC/bin_annotation/Col_0_high_202bins_all_TAIR12_feature_check
+mkdir -p "$OUTDIR"
+#相对位置
+awk -F'\t' '
+BEGIN{OFS="\t"}
+NR==FNR{
+  chr_len[$1]=$2
+  next
+}
+FNR==1{
+  print $0,"chr_len","midpoint","relative_pos","relative_bin_10pct"
+  next
+}
+{
+  mid=int(($3+$4)/2)
+  rel=mid/chr_len[$2]
+  bin=int(rel*10)
+  if(bin==10) bin=9
+  label=sprintf("%02d-%02d%%",bin*10,(bin+1)*10)
+  print $0,chr_len[$2],mid,rel,label
+}' "$FA12.fai" "09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/version_check/unmatched_67.position_in_TAIR12.tsv" \
+> "$OUTDIR/unmatched_67.position_in_TAIR12.relative.tsv"
+#看是否在染色体前后1Mb
+awk 'BEGIN{OFS="\t"} {print $1,0,1000000,$1"_left_1Mb"; print $1,$2-1000000,$2,$1"_right_1Mb"}' "$FA12.fai" \
+> "$OUTDIR/TAIR12.chromosome_ends.1Mb.bed"
+awk -F'\t' 'BEGIN{OFS="\t"} NR>1{print $2,$3-1,$4,$1}' \
+"09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/version_check/unmatched_67.position_in_TAIR12.tsv" \
+> "$OUTDIR/unmatched_67.TAIR12_gene.bed"
+bedtools intersect \
+  -a "$OUTDIR/unmatched_67.TAIR12_gene.bed" \
+  -b "$OUTDIR/TAIR12.chromosome_ends.1Mb.bed" \
+  -wa -wb \
+> "$OUTDIR/unmatched_67.overlap_chromosome_ends_1Mb.tsv"
+
+cut -f4 "$OUTDIR/unmatched_67.overlap_chromosome_ends_1Mb.tsv" \
+| sort -u \
+| wc -l
+
+cat "$OUTDIR/unmatched_67.overlap_chromosome_ends_1Mb.tsv"
+#看前后5%
+awk 'BEGIN{OFS="\t"} {
+  end=int($2*0.05)
+  print $1,0,end,$1"_left_5pct"
+  print $1,$2-end,$2,$1"_right_5pct"
+}' "$FA12.fai" \
+> "$OUTDIR/TAIR12.chromosome_ends.5pct.bed"
+
+bedtools intersect \
+  -a "$OUTDIR/unmatched_67.TAIR12_gene.bed" \
+  -b "$OUTDIR/TAIR12.chromosome_ends.5pct.bed" \
+  -wa -wb \
+> "$OUTDIR/unmatched_67.overlap_chromosome_ends_5pct.tsv"
+
+cut -f4 "$OUTDIR/unmatched_67.overlap_chromosome_ends_5pct.tsv" \
+| sort -u \
+| wc -l
+#提取gene id
+cut -f4 "$OUTDIR/unmatched_67.overlap_chromosome_ends_5pct.tsv" \
+| sort -u \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.gene_ids.txt"
+wc -l "$OUTDIR/unmatched_67.in_chr_end_5pct.gene_ids.txt"
+#提取12 gff 注释
+awk -F'\t' '
+BEGIN{
+  OFS="\t"
+  print "TAIR12_gene","chr","start","end","strand","length","Name","biotype","Note","product","attributes"
+}
+NR==FNR{
+  q[$1]=1
+  next
+}
+$0 !~ /^#/ && $3=="gene"{
+  id="NA"; name="NA"; biotype="NA"; note="NA"; product="NA"
+
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    split(a[i],kv,"=")
+    if(kv[1]=="ID"){
+      id=kv[2]
+      sub(/^gene:/,"",id)
+    }
+    if(kv[1]=="Name"){
+      name=kv[2]
+    }
+    if(kv[1]=="biotype" || kv[1]=="gene_biotype"){
+      biotype=kv[2]
+    }
+    if(kv[1]=="Note" || kv[1]=="description"){
+      note=kv[2]
+    }
+    if(kv[1]=="product"){
+      product=kv[2]
+    }
+  }
+
+  if(id in q){
+    print id,$1,$4,$5,$7,$5-$4+1,name,biotype,note,product,$9
+  }
+}' \
+"$OUTDIR/unmatched_67.in_chr_end_5pct.gene_ids.txt" \
+"$GFF12" \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.TAIR12_gene_annotation.tsv"
+#加官方映射表的标注
+awk -F'\t' '
+BEGIN{OFS="\t"}
+NR==FNR{
+  if(FNR>1){
+    araport[$1]=$2
+    tair12_type[$1]=$3
+    tair12_count[$1]=$4
+    araport_type[$1]=$5
+    araport_count[$1]=$6
+    status[$1]=$7
+  }
+  next
+}
+FNR==1{
+  print $0,"Araport11_ID","TAIR12_Type","TAIR12_Count","Araport11_Type","Araport11_Count","TAIR12_vs_Araport11_Status"
+  next
+}
+{
+  g=$1
+  print $0,(araport[g]=="" ? "NA":araport[g]),(tair12_type[g]=="" ? "NA":tair12_type[g]),(tair12_count[g]=="" ? "NA":tair12_count[g]),(araport_type[g]=="" ? "NA":araport_type[g]),(araport_count[g]=="" ? "NA":araport_count[g]),(status[g]=="" ? "NA":status[g])
+}' \
+"$MAP12" \
+"$OUTDIR/unmatched_67.in_chr_end_5pct.TAIR12_gene_annotation.tsv" \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.TAIR12_gene_annotation.with_Araport11_status.tsv"
+#提取完整的gff3条目
+GFF=ref/TAIR12/TAIR12_1Feb26.gff3
+IDS=09_bigwigCompare_RPGC/bin_annotation/Col_0_high_202bins_all_TAIR12_feature_check/unmatched_67.in_chr_end_5pct.gene_ids.txt
+OUT=09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/version_check/unmatched_67.in_chr_end_5pct_gene_models.TAIR12.gff3
+awk -F'\t' '
+BEGIN{
+    OFS="\t"
+}
+
+NR==FNR{
+    if($1!="" && $1!="TAIR12_gene" && $1!="gene"){
+        target[$1]=1
+    }
+    next
+}
+
+function get_attr(attr,key,    n,a,i,kv){
+    n=split(attr,a,";")
+    for(i=1;i<=n;i++){
+        split(a[i],kv,"=")
+        if(kv[1]==key){
+            return kv[2]
+        }
+    }
+    return ""
+}
+
+function parent_is_kept(parent,    n,p,i){
+    n=split(parent,p,",")
+    for(i=1;i<=n;i++){
+        if(p[i] in keep){
+            return 1
+        }
+    }
+    return 0
+}
+
+$0 ~ /^#/ {
+    next
+}
+
+{
+    id=get_attr($9,"ID")
+    parent=get_attr($9,"Parent")
+
+    if($3=="gene" && id in target){
+        print "###"
+        keep[id]=1
+        print
+    }
+    else if(parent!="" && parent_is_kept(parent)){
+        if(id!=""){
+            keep[id]=1
+        }
+        print
+    }
+}
+' "$IDS" "$GFF" > "$OUT"
+
+#chr4 的bed
+awk -F'\t' 'BEGIN{OFS="\t"} NR>1 && $2=="Chr4"{print $2,$3-1,$4,$1}' \
+"$OUTDIR/unmatched_67.in_chr_end_5pct.TAIR12_gene_annotation.with_Araport11_status.tsv" \
+| sort -k1,1 -k2,2n \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_genes.bed"
+#计算相邻基因间距
+awk 'BEGIN{OFS="\t"; print "chr","gene","start","end","prev_gene","prev_end","distance_to_prev"}
+{
+  if(NR==1){
+    print $1,$4,$2,$3,"NA","NA","NA"
+  }else{
+    dist=$2-prev_end
+    if(dist<0) dist=0
+    print $1,$4,$2,$3,prev_gene,prev_end,dist
+  }
+  prev_gene=$4
+  prev_end=$3
+}' "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_genes.bed" \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_adjacent_distance.tsv"
+cat "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_adjacent_distance.tsv"
+#相邻基因距离 ≤ 100 kb 视为同一簇
+bedtools cluster \
+  -d 100000 \
+  -i "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_genes.bed" \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_genes.cluster_100kb.bed"
+
+awk 'BEGIN{OFS="\t"} {count[$5]++; genes[$5]=(genes[$5]==""?$4:genes[$5]","$4)}
+END{print "cluster_id","gene_count","genes"; for(c in count) print c,count[c],genes[c]}' \
+"$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_genes.cluster_100kb.bed" \
+| sort -k2,2nr \
+> "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_cluster_100kb.summary.tsv"
+cat "$OUTDIR/unmatched_67.in_chr_end_5pct.Chr4_cluster_100kb.summary.tsv"
+
+##看202 个bin 在整个12 gff里面能富集到多少种feature
+#在bin后面加id
+awk 'BEGIN{OFS="\t"} {print $1,$2,$3,"bin_"NR}' "$BIN" \
+> "$OUTDIR/Col_0_high_202bins.id.bed"
+wc -l "$OUTDIR/Col_0_high_202bins.id.bed"
+#将 12 的 gff 整个转成 bed
+awk -F'\t' '
+BEGIN{OFS="\t"}
+$0 !~ /^#/{
+  id="."
+  name="."
+  parent="."
+  biotype="."
+
+  n=split($9,a,";")
+  for(i=1;i<=n;i++){
+    split(a[i],kv,"=")
+    if(kv[1]=="ID"){
+      id=kv[2]
+      sub(/^gene:/,"",id)
+    }
+    if(kv[1]=="Name"){
+      name=kv[2]
+      sub(/^gene:/,"",name)
+    }
+    if(kv[1]=="Parent"){
+      parent=kv[2]
+      sub(/^gene:/,"",parent)
+    }
+    if(kv[1]=="biotype"){
+      biotype=kv[2]
+    }
+  }
+
+  print $1,$4-1,$5,id,$3,$7,parent,name,biotype,$9
+}' "$GFF12" \
+> "$OUTDIR/TAIR12.all_features.bed"
+#和bin 做交集
+bedtools intersect \
+  -a "$OUTDIR/Col_0_high_202bins.id.bed" \
+  -b "$OUTDIR/TAIR12.all_features.bed" \
+  -wa -wb \
+> "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.tsv"
+#看属于哪些feature
+awk -F'\t' '{print $4"\t"$9}' "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.tsv" \
+| sort -u \
+| cut -f2 \
+| sort \
+| uniq -c \
+| sort -k1,1nr \
+> "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.bin_level_type_count.tsv"
+cat "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.bin_level_type_count.tsv"
+#每个bin对应的feature
+awk -F'\t' '
+BEGIN{OFS="\t"}
+{
+  bin=$4
+  key=bin SUBSEP $9
+  if(!(key in seen_type)){
+    types[bin]=(types[bin]=="" ? $9 : types[bin]","$9)
+    seen_type[key]=1
+  }
+
+  key2=bin SUBSEP $8
+  if(!(key2 in seen_id)){
+    ids[bin]=(ids[bin]=="" ? $8 : ids[bin]","$8)
+    seen_id[key2]=1
+  }
+
+  chr[bin]=$1
+  start[bin]=$2
+  end[bin]=$3
+}
+END{
+  print "bin_id","chr","start","end","feature_types","feature_ids"
+  for(bin in types){
+    print bin,chr[bin],start[bin],end[bin],types[bin],ids[bin]
+  }
+}' "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.tsv" \
+| sort -k1,1V \
+> "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.bin_summary.tsv"
+#保留没有gff feature 的bin 并统计
+bedtools intersect \
+  -a "$OUTDIR/Col_0_high_202bins.id.bed" \
+  -b "$OUTDIR/TAIR12.all_features.bed" \
+  -loj \
+> "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.with_nohit.tsv"
+awk -F'\t' '$5=="."{print $4}' \
+"$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.with_nohit.tsv" \
+| sort -u \
+> "$OUTDIR/Col_0_high_202bins.no_TAIR12_GFF_feature.bins.txt"
+
+wc -l "$OUTDIR/Col_0_high_202bins.no_TAIR12_GFF_feature.bins.txt"
+#此处看到富集到的 gene有120个，看看原因
+ALL_OV=09_bigwigCompare_RPGC/bin_annotation/Col_0_high_202bins_all_TAIR12_feature_check/Col_0_high_202bins.overlap_TAIR12_all_features.tsv
+# gene overlap 行数，124
+awk -F'\t' '$9=="gene"' "$ALL_OV" | wc -l
+
+# unique gene ID 数，110
+awk -F'\t' '$9=="gene"{print $8}' "$ALL_OV" \
+| sort -u \
+| wc -l
+#做 unique feature ID 统计
+awk -F'\t' '{print $9"\t"$8}' "$OUTDIR/Col_0_high_202bins.overlap_TAIR12_all_features.tsv" \
+| sort -u \
+| awk -F'\t' '{print $1}' \
+| sort \
+| uniq -c \
+| sort -k1,1nr \
+> "$OUTDIR/all_features.unique_feature_count.by_feature_type.tsv"
+cat "$OUTDIR/all_features.unique_feature_count.by_feature_type.tsv"
+#需要有注释优先级，避免重复计数
+ALL_OV=09_bigwigCompare_RPGC/bin_annotation/Col_0_high_202bins_all_TAIR12_feature_check/Col_0_high_202bins.overlap_TAIR12_all_features.tsv
+OUTDIR=09_bigwigCompare_RPGC/bin_annotation/Col_0_high_202bins_all_TAIR12_feature_check
+awk -F'\t' '
+BEGIN{
+  OFS="\t"
+}
+{
+  bin=$4
+  type=$9
+
+  all_types[bin]=(all_types[bin]=="" ? type : all_types[bin]","type)
+
+  if(type=="CDS"){
+    score=1; cls="CDS"
+  }else if(type ~ /UTR/ || type=="five_prime_UTR" || type=="three_prime_UTR"){
+    score=2; cls="UTR"
+  }else if(type=="exon"){
+    score=3; cls="exon_non_CDS"
+  }else if(type=="gene"){
+    score=4; cls="gene_body_other"
+  }else if(type ~ /transposable|transposon|repeat|TE|mRNA_TE/){
+    score=5; cls="TE_repeat_like"
+  }else{
+    score=6; cls="other_feature"
+  }
+
+  if(!(bin in best_score) || score < best_score[bin]){
+    best_score[bin]=score
+    best_class[bin]=cls
+  }
+}
+END{
+  print "bin_id","priority_class","all_overlap_feature_types"
+  for(bin in best_class){
+    print bin,best_class[bin],all_types[bin]
+  }
+}' "$ALL_OV" \
+| sort -k1,1V \
+> "$OUTDIR/Col_0_high_202bins.priority_annotation.tsv"
+
+
+#查看甲方表格第一列33602个基因id 的原因
+awk 'BEGIN{FS=OFS="\t"}
+$0 !~ /^#/ {
+    if (match($9, /ID=([^;]+)/, a)) print a[1]
+}' "$GFF10" \
+| sort -u \
+> ref/TAIR10/TAIR10.all_feature.ids.txt
+comm -12 \
+  <(sort 12_external_gene_list_overlap/input/33602_total_genelist.txt) \
+  <(sort ref/TAIR10/nuclear_only/TAIR10_gene_ids.txt) \
+> 33602_in_TAIR10_feature_gene.txt
+comm -23 \
+  <(sort 12_external_gene_list_overlap/input/33602_total_genelist.txt) \
+  <(sort ref/TAIR10/nuclear_only/TAIR10_gene_ids.txt) \
+> 33602_not_in_TAIR10_feature_gene.txt
+comm -12 \
+  <(sort 33602_not_in_TAIR10_feature_gene.txt) \
+  <(sort ref/TAIR10/TAIR10.all_feature.ids.txt) \
+> 33602_not_gene_but_in_TAIR10_other_features.txt
+wc -l 12_external_gene_list_overlap/input/33602_total_genelist.txt
+wc -l 33602_in_TAIR10_feature_gene.txt
+wc -l 33602_not_in_TAIR10_feature_gene.txt
+wc -l 33602_not_gene_but_in_TAIR10_other_features.txt
+#上方的 33602 txt 是 window 的换行符，linux无法识别
+head -n 10 12_external_gene_list_overlap/input/33602_total_genelist.txt | cat -A
+head -n 10 ref/TAIR10/nuclear_only/TAIR10_gene_ids.txt | cat -A
+grep -oEi 'AT[1-5][A-Z][0-9]{5,6}(\.[0-9]+)?' \
+  12_external_gene_list_overlap/input/33602_total_genelist.txt \
+| sed -E 's/\.[0-9]+$//' \
+| tr '[:lower:]' '[:upper:]' \
+| sort -u \
+> 12_external_gene_list_overlap/input/33602_total_genelist.clean.ids.txt
+wc -l 12_external_gene_list_overlap/input/33602_total_genelist.clean.ids.txt
+head -n 10 12_external_gene_list_overlap/input/33602_total_genelist.clean.ids.txt | cat -A
+awk 'BEGIN{FS=OFS="\t"}
+$0 !~ /^#/ {
+    id="NA"
+
+    if (match($9, /(^|;)ID=([^;]+)/, a)) {
+        id=a[2]
+    } else if (match($9, /(^|;)Name=([^;]+)/, b)) {
+        id=b[2]
+    } else if (match($9, /(^|;)locus_tag=([^;]+)/, c)) {
+        id=c[2]
+    }
+
+    gsub(/\r/, "", id)
+    sub(/^gene:/, "", id)
+    sub(/\.[0-9]+$/, "", id)
+
+    print toupper(id)
+}' "$GFF10" \
+| grep -E '^AT[1-5][A-Z][0-9]{5,6}$' \
+| sort -u \
+> ref/TAIR10/TAIR10.all_feature.clean.ids.txt
+A=12_external_gene_list_overlap/input/33602_total_genelist.clean.ids.txt
+B=ref/TAIR10/TAIR10.feature_gene.clean.ids.txt
+
+comm -12 "$A" "$B" \
+> 33602_in_TAIR10_feature_gene.clean.txt
+
+comm -23 "$A" "$B" \
+> 33602_not_in_TAIR10_feature_gene.clean.txt
+comm -12 \
+  "$A" \
+  ref/TAIR10/TAIR10.all_feature.clean.ids.txt \
+> 33602_in_TAIR10_all_features.clean.txt
+wc -l "$A"
+wc -l "$B"
+wc -l 33602_in_TAIR10_feature_gene.clean.txt
+wc -l 33602_in_TAIR10_all_features.clean.txt
+#看非gene type 的对应什么type
+awk 'BEGIN{FS=OFS="\t"}
+NR==FNR {
+    ids[$1]=1
+    next
+}
+$0 !~ /^#/ {
+    id="NA"
+
+    if (match($9, /(^|;)ID=([^;]+)/, a)) {
+        id=a[2]
+    } else if (match($9, /(^|;)Name=([^;]+)/, b)) {
+        id=b[2]
+    } else if (match($9, /(^|;)locus_tag=([^;]+)/, c)) {
+        id=c[2]
+    }
+
+    gsub(/\r/, "", id)
+    sub(/^gene:/, "", id)
+    sub(/\.[0-9]+$/, "", id)
+    id=toupper(id)
+
+    if (id in ids) {
+        print id,$3,$1,$4,$5,$7,$9
+    }
+}' \
+33602_not_in_TAIR10_feature_gene.clean.txt \
+ref/TAIR10/TAIR10_GFF3_genes.gff \
+> 33602_not_gene_feature.annotation_from_TAIR10.tsv
+cut -f2 33602_not_gene_feature.annotation_from_TAIR10.tsv \
+| sort \
+| uniq -c \
+| sort -k1,1nr \
+> 33602_not_gene_feature.type_count.tsv
+cat 33602_not_gene_feature.type_count.tsv
+
+awk 'BEGIN{FS=OFS="\t"}
+{
+    id=$1
+    type=$2
+    if (!seen[id,type]++) {
+        types[id]=(types[id]=="" ? type : types[id] "," type)
+    }
+}
+END{
+    print "gene_id","feature_types"
+    for (id in types) print id,types[id]
+}' 33602_not_gene_feature.annotation_from_TAIR10.tsv \
+| sort -k1,1 \
+> 33602_not_gene_feature.unique_id_feature_types.tsv
+
+head 33602_not_gene_feature.unique_id_feature_types.tsv
+
 
 
 # 将差异区间与 gene ovealap 的列表跟黄老师给的表格 overlap
@@ -1554,3 +2836,208 @@ python "$SCRIPT" \
 cat 12_external_gene_list_overlap/Col_0_high_202bins_gene_body/overlap_summary.tsv
 cat 12_external_gene_list_overlap/Col_0_high_202bins_gene_body_plus2k/overlap_summary.tsv
 
+#随机测试
+#生成背景基因集
+mkdir -p 12_gene_set_enrichment_permutation/ref
+#先做gene_body的，差异bin 的 overlap 基因数为 44
+cut -f4 11_peak_overlap_gene_local_X800/ref/TAIR12.gene_body.bed \
+  | grep -E '^AT[1-5]G[0-9]{5}$' \
+  | sort -u \
+> 12_gene_set_enrichment_permutation/ref/TAIR12.protein_coding.ATxG.background_genes.txt
+wc -l 12_gene_set_enrichment_permutation/ref/TAIR12.protein_coding.ATxG.background_genes.txt
+#随机测试脚本
+cat > 12_gene_set_enrichment_permutation/run_gene_level_permutation.py <<'EOF'
+#!/usr/bin/env python3
+
+import argparse
+import os
+import re
+import numpy as np
+import pandas as pd
+
+gene_pattern = re.compile(r"AT[1-5]G[0-9]{5}(?:\.[0-9]+)?", re.IGNORECASE)
+
+def extract_genes_from_text(x):
+    if pd.isna(x):
+        return set()
+    genes = set()
+    for m in gene_pattern.findall(str(x)):
+        g = re.sub(r"\.[0-9]+$", "", m.upper())
+        genes.add(g)
+    return genes
+
+def read_gene_file(path):
+    genes = set()
+    with open(path) as f:
+        for line in f:
+            genes |= extract_genes_from_text(line.strip())
+    return genes
+
+def read_reference_table(path, sheet=0):
+    lower = path.lower()
+    if lower.endswith(".xlsx") or lower.endswith(".xls"):
+        return pd.read_excel(path, sheet_name=sheet, dtype=str)
+    elif lower.endswith(".csv"):
+        return pd.read_csv(path, dtype=str)
+    else:
+        return pd.read_csv(path, sep="\t", dtype=str)
+
+def bh_adjust(pvals):
+    pvals = np.asarray(pvals, dtype=float)
+    n = len(pvals)
+    order = np.argsort(pvals)
+    ranked = pvals[order]
+    adj = np.empty(n, dtype=float)
+    prev = 1.0
+    for i in range(n - 1, -1, -1):
+        rank = i + 1
+        val = ranked[i] * n / rank
+        prev = min(prev, val)
+        adj[order[i]] = min(prev, 1.0)
+    return adj
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--query", required=True, help="Query gene list, one gene per line or mixed text.")
+    parser.add_argument("--reference", required=True, help="39-column reference gene-list table, tsv/csv/xlsx.")
+    parser.add_argument("--background", required=True, help="Background gene list.")
+    parser.add_argument("--outdir", required=True)
+    parser.add_argument("--nperm", type=int, default=10000)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--sheet", default=0, help="Excel sheet index/name. Default: 0")
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+    overlap_dir = os.path.join(args.outdir, "overlap_genes_by_dataset")
+    os.makedirs(overlap_dir, exist_ok=True)
+
+    rng = np.random.default_rng(args.seed)
+
+    background = read_gene_file(args.background)
+    query_raw = read_gene_file(args.query)
+    query = query_raw & background
+
+    bg_list = np.array(sorted(background))
+    bg_n = len(background)
+    query_n_raw = len(query_raw)
+    query_n = len(query)
+
+    if query_n == 0:
+        raise ValueError("No query genes remain after filtering by background.")
+
+    ref_df = read_reference_table(args.reference, sheet=args.sheet)
+
+    rows = []
+    random_count_matrix = {}
+
+    for col in ref_df.columns:
+        ref_raw = set()
+        for x in ref_df[col]:
+            ref_raw |= extract_genes_from_text(x)
+
+        ref = ref_raw & background
+        ref_n_raw = len(ref_raw)
+        ref_n = len(ref)
+
+        if ref_n == 0:
+            obs = 0
+            expected_formula = 0.0
+            random_counts = np.zeros(args.nperm, dtype=int)
+            random_mean = 0.0
+            random_sd = 0.0
+            fe = np.nan
+            direction = "NA"
+            p_emp = np.nan
+            overlap = set()
+        else:
+            overlap = query & ref
+            obs = len(overlap)
+
+            expected_formula = query_n * ref_n / bg_n
+
+            random_counts = np.empty(args.nperm, dtype=int)
+            ref_set = set(ref)
+
+            for i in range(args.nperm):
+                rand_query = set(rng.choice(bg_list, size=query_n, replace=False))
+                random_counts[i] = len(rand_query & ref_set)
+
+            random_mean = float(np.mean(random_counts))
+            random_sd = float(np.std(random_counts, ddof=1))
+
+            if random_mean > 0:
+                fe = obs / random_mean
+            else:
+                fe = np.inf if obs > 0 else np.nan
+
+            if obs >= random_mean:
+                direction = "+"
+                p_emp = (np.sum(random_counts >= obs) + 1) / (args.nperm + 1)
+            else:
+                direction = "-"
+                p_emp = (np.sum(random_counts <= obs) + 1) / (args.nperm + 1)
+
+        safe_col = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(col))
+        overlap_file = os.path.join(overlap_dir, f"{safe_col}.overlap_genes.txt")
+        with open(overlap_file, "w") as out:
+            for g in sorted(overlap):
+                out.write(g + "\n")
+
+        random_count_matrix[col] = random_counts
+
+        rows.append({
+            "dataset": col,
+            "background_genes": bg_n,
+            "query_genes_raw": query_n_raw,
+            "query_genes_in_background": query_n,
+            "reference_genes_raw": ref_n_raw,
+            "reference_genes_in_background": ref_n,
+            "observed_overlap": obs,
+            "expected_overlap_formula": expected_formula,
+            "expected_overlap_permutation_mean": random_mean,
+            "random_overlap_sd": random_sd,
+            "random_overlap_min": int(np.min(random_counts)),
+            "random_overlap_max": int(np.max(random_counts)),
+            "FE_observed_over_expected": fe,
+            "enrichment_direction": direction,
+            "empirical_p": p_emp,
+            "overlap_gene_file": overlap_file
+        })
+
+    result = pd.DataFrame(rows)
+
+    valid_p = result["empirical_p"].notna()
+    result["empirical_p_BH"] = np.nan
+    result.loc[valid_p, "empirical_p_BH"] = bh_adjust(result.loc[valid_p, "empirical_p"].values)
+
+    result_file = os.path.join(args.outdir, "gene_level_enrichment_permutation_summary.tsv")
+    result.to_csv(result_file, sep="\t", index=False)
+
+    random_df = pd.DataFrame(random_count_matrix)
+    random_df.index = np.arange(1, args.nperm + 1)
+    random_df.index.name = "permutation"
+    random_df.to_csv(os.path.join(args.outdir, "random_overlap_counts.tsv"), sep="\t")
+
+    print("Done.")
+    print("Summary:", result_file)
+    print("Random overlap counts:", os.path.join(args.outdir, "random_overlap_counts.tsv"))
+    print("Overlap gene lists:", overlap_dir)
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x 12_gene_set_enrichment_permutation/run_gene_level_permutation.py
+#genebody版本
+python -m pip install openpyxl
+QUERY="09_bigwigCompare_RPGC/Col_0_high_202_gene_overlap/Col_0_high_202bins.gene_body.unique_genes.txt"
+REF_TABLE="12_external_gene_list_overlap/input/CO_association_data_June9.xlsx"
+BACKGROUND="12_gene_set_enrichment_permutation/ref/TAIR12.protein_coding.ATxG.background_genes.txt"
+OUTDIR="12_gene_set_enrichment_permutation/Col_0_high_202bins_genebody_vs_June9_39cols"
+python3 12_gene_set_enrichment_permutation/run_gene_level_permutation.py \
+  --query "$QUERY" \
+  --reference "$REF_TABLE" \
+  --background "$BACKGROUND" \
+  --outdir "$OUTDIR" \
+  --nperm 10000 \
+  --seed 1
