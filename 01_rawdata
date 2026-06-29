@@ -806,7 +806,7 @@ samtools sort -@ 8 \
 samtools index 07_bam_merged/dmcl_4.local.X800.merged.sorted.bam
 #获得基因组长度
 awk '$1 ~ /^Chr[1-5]$/ {sum += $2} END {print sum}'   ref/TAIR12/TAIR12_1Feb26.Chr.fa.fai
-#生成标准化的bigWig（CPM 标准化避免测序深度不同影响比较）
+#生成标准化的bigWig
 bamCoverage \
   -b 07_bam_merged/Col_0.local.X800.merged.sorted.bam \
   -o 08_bigwig_merged_RPGC/Col_0.local.X800.merged.RPGC.bw \
@@ -899,7 +899,7 @@ awk 'BEGIN{OFS="\t"; i=0} $4<=-0.585 {
 
 wc -l ${outdir}/Col_0_high.log2FC_ge0.585.bin200.bed
 wc -l ${outdir}/dmcl_4_high.log2FC_le_minus0.585.bin200.bed
-#快速查看它们分布在哪些染色体上
+#快速查看它们分布在哪些染色体上 注释
 conda activate chipseeker_final
 cat > 09_bigwigCompare_RPGC/bin_annotation/annotate_diff_bins_chipseeker.R <<'EOF'
 library(ChIPseeker)
